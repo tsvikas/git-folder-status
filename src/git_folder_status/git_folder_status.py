@@ -173,7 +173,7 @@ def all_repos_issues(
 ):
     basedir = Path(basedir)
     if is_git_repo(basedir):
-        return {".": repo_issues}
+        return {".": repo_issues(basedir)}
     issues = _all_repos_issues(basedir, recurse, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
