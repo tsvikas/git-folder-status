@@ -154,12 +154,15 @@ def _all_repos_issues(
                     for p in folder.glob("*")
                     if p.is_file() and not p.is_symlink()
                 ]
-                if untracked_files:
-                    issues[folder] = {
-                        "untracked_files": shorten_filelist(untracked_files),
-                        "sym_links": shorten_filelist(sym_links),
-                        "is_git": False,
-                    }
+                if untracked_files or sym_links:
+                    issues[folder] = {"is_git": False}
+                    if untracked_files:
+                        issues[folder]["untracked_files"] = shorten_filelist(
+                            untracked_files
+                        )
+                    if sym_links:
+                        issues[folder]["sym_links"] = shorten_filelist(sym_links)
+
             else:
                 issues[folder] = {"is_git": False}
     return issues
