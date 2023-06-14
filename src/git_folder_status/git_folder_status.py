@@ -4,7 +4,6 @@ from pathlib import Path
 
 from git import InvalidGitRepositoryError, Repo
 
-
 VERBOSE = True
 
 
@@ -193,14 +192,15 @@ def format_report(issues: dict, include_ok: bool = False, fmt: str = "pprint"):
             indent=2,
             sort_keys=False,
         )
-    elif fmt == "json":
+    if fmt == "json":
         import json
 
         return json.dumps(issues, indent=4)
-    else:
+    if fmt == "pprint":
         import pprint
 
         return pprint.pformat(issues, sort_dicts=False)
+    raise ValueError(f"format_report got an unsupported {fmt=}")
 
 
 def main():
