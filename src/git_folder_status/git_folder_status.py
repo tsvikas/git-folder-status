@@ -205,10 +205,10 @@ def format_report(issues: dict, include_ok: bool = False, fmt: str = "pprint"):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="git_state",
-        description="find all unpushed branches in sub directories",
+        prog="git-state",
+        description="find all unpushed data in a directory",
     )
-    parser.add_argument("basedir", help="directory to check")
+    parser.add_argument("DIRECTORY", help="directory to check")
     parser.add_argument(
         "-r", "--recurse", type=int, default=3, help="max recurse in directories"
     )
@@ -216,10 +216,10 @@ def main():
         "--fetch", action="store_true", help="run git fetch on all repos"
     )
     parser.add_argument(
-        "-i", "--include", action="append", help="only include these remotes"
+        "-i", "--include-remote", action="append", help="only include these remotes"
     )
     parser.add_argument(
-        "-x", "--exclude", action="append", help="don't include these remotes"
+        "-x", "--exclude-remote", action="append", help="don't include these remotes"
     )
     parser.add_argument(
         "-d", "--exclude-dir", action="append", help="don't include these dirs"
@@ -235,16 +235,17 @@ def main():
         "-l", "--include_ok", action="store_true", help="show also repos without issues"
     )
     args = parser.parse_args()
+    basedir = args.DIRECTORY
     if args.fetch:
         all_fetch_remotes(
-            args.basedir,
+            basedir,
             args.recurse,
-            include=args.include,
-            exclude=args.exclude,
+            include=args.include_remote,
+            exclude=args.exclude_remote,
             exclude_dirs=args.exclude_dir,
         )
     issues = all_repos_issues(
-        args.basedir, recurse=args.recurse, exclude_dirs=args.exclude_dir
+        basedir, recurse=args.recurse, exclude_dirs=args.exclude_dir
     )
     if VERBOSE:
         print()
