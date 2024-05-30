@@ -251,13 +251,12 @@ def main() -> None:
         help="output format",
     )
     parser.add_argument(
-        "-l", "--include_ok", action="store_true", help="show also repos without issues"
+        "-k", "--include-ok", action="store_true", help="show also repos without issues"
     )
     parser.add_argument(
-        "-q", "--quiet", action="store_true", help="don't show progress"
+        "-l", "--list-repos", action="store_true", help="print names of all repos"
     )
     args = parser.parse_args()
-    verbose = not args.quiet
     basedir = args.DIRECTORY
     if args.fetch:
         fetch_remotes_in_subfolders(
@@ -267,8 +266,10 @@ def main() -> None:
             exclude=args.exclude_remote,
             exclude_dirs=args.exclude_dir,
         )
-    issues = issues_for_all_subfolders(basedir, args.recurse, verbose, args.exclude_dir)
-    if verbose:
+    issues = issues_for_all_subfolders(
+        basedir, args.recurse, args.list_repos, args.exclude_dir
+    )
+    if args.list_repos:
         print()
     print(format_report(issues, include_ok=args.include_ok, fmt=args.format))
 
