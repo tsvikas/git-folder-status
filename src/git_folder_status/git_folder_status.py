@@ -28,7 +28,7 @@ def fetch_remotes(
     return {remote.name: remote.fetch() for remote in remotes}
 
 
-def _all_fetch_remotes(
+def _fetch_remotes_in_subfolders(
     basedir: Path,
     recurse: int = 3,
     include: list[str] | None = None,
@@ -47,18 +47,22 @@ def _all_fetch_remotes(
     for folder in basedir.glob("*"):
         if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
             continue
-        fetched.extend(_all_fetch_remotes(folder, recurse - 1, include, exclude))
+        fetched.extend(
+            _fetch_remotes_in_subfolders(folder, recurse - 1, include, exclude)
+        )
     return fetched
 
 
-def all_fetch_remotes(
+def fetch_remotes_in_subfolders(
     basedir: Path,
     recurse: int = 3,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
 ) -> list[str]:
-    fetched = _all_fetch_remotes(basedir, recurse, include, exclude, exclude_dirs)
+    fetched = _fetch_remotes_in_subfolders(
+        basedir, recurse, include, exclude, exclude_dirs
+    )
     return [p.relative_to(basedir).as_posix() for p in fetched]
 
 
@@ -83,6 +87,14 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
     }
 
 
+def repo_issues_in_stats(repo: Repo) -> dict[str, Any]:
+    stats_to_include = {"is_dirty", "untracked_files"}
+    stats = repo_stats(repo)
+    issues = {k: stats.get(k, None) for k in stats_to_include}
+    issues = {k: v for k, v in issues.items() if v}
+    return issues
+
+
 def branch_status(repo: Repo, branch: Head) -> dict[str, Any]:
     if branch.tracking_branch() is None:
         return {"remote_branch": False}
@@ -105,35 +117,34 @@ def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
-def repo_issues(folder: Path, verbose: bool) -> dict[str, Any]:
+def repo_issues_in_branches(repo: Repo) -> dict[str, Any]:
+    branches_st = all_branches_status(repo)
+    issues = dict()
+    issues["branches_without_remote"] = [
+        k for k, v in branches_st.items() if not v["remote_branch"]
+    ]
+    issues["branches_out_of_sync"] = {
+        k: v
+        for k, v in branches_st.items()
+        if v["remote_branch"] and (v["commits_behind"] or v["commits_ahead"])
+    }
+    issues = {k: v for k, v in issues.items() if v}
+    return issues
+
+
+def issues_for_one_folder(folder: Path, verbose: bool) -> dict[str, Any]:
     try:
         repo = Repo(folder)
     except InvalidGitRepositoryError:
         return {"is_git": False}
     if verbose:
         print(folder.name)
-    repo_st = {
-        k: v
-        for k, v in repo_stats(repo).items()
-        if k in {"is_dirty", "untracked_files"} and v
-    }
-    branches_st = all_branches_status(repo)
-    branches_without_remote = [
-        k for k, v in branches_st.items() if not v["remote_branch"]
-    ]
-    branches_out_of_sync = {
-        k: v
-        for k, v in branches_st.items()
-        if v["remote_branch"] and (v["commits_behind"] or v["commits_ahead"])
-    }
-    if branches_without_remote:
-        repo_st["branches_without_remote"] = branches_without_remote
-    if branches_out_of_sync:
-        repo_st["branches_out_of_sync"] = branches_out_of_sync
-    return repo_st
+    repo_st = repo_issues_in_stats(repo)
+    branches_st = repo_issues_in_branches(repo)
+    return repo_st | branches_st
 
 
-def _all_repos_issues(
+def _issues_for_all_subfolders(
     basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
 ) -> dict[Path, dict[str, Any]]:
     exclude_dirs = exclude_dirs or []
@@ -141,11 +152,11 @@ def _all_repos_issues(
     for folder in basedir.glob("*"):
         if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
             continue
-        summary = repo_issues(folder, verbose)
+        summary = issues_for_one_folder(folder, verbose)
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
         else:
-            subfolder_summary = _all_repos_issues(
+            subfolder_summary = _issues_for_all_subfolders(
                 folder, recurse - 1, verbose, exclude_dirs
             )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
@@ -170,7 +181,7 @@ def _all_repos_issues(
     return issues
 
 
-def all_repos_issues(
+def issues_for_all_subfolders(
     basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
@@ -183,8 +194,8 @@ def all_repos_issues(
         except TypeError:
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
-        return {from_basedir: repo_issues(basedir_working_dir, verbose)}
-    issues = _all_repos_issues(basedir, recurse, verbose, exclude_dirs)
+        return {from_basedir: issues_for_one_folder(basedir_working_dir, verbose)}
+    issues = _issues_for_all_subfolders(basedir, recurse, verbose, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
     if basedir_files:
@@ -253,14 +264,14 @@ def main() -> None:
     verbose = not args.quiet
     basedir = args.DIRECTORY
     if args.fetch:
-        all_fetch_remotes(
+        fetch_remotes_in_subfolders(
             basedir,
             args.recurse,
             include=args.include_remote,
             exclude=args.exclude_remote,
             exclude_dirs=args.exclude_dir,
         )
-    issues = all_repos_issues(basedir, args.recurse, verbose, args.exclude_dir)
+    issues = issues_for_all_subfolders(basedir, args.recurse, verbose, args.exclude_dir)
     if verbose:
         print()
     print(format_report(issues, include_ok=args.include_ok, fmt=args.format))
