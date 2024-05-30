@@ -7,8 +7,6 @@ from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 from git.remote import FetchInfo
 
-VERBOSE = True
-
 
 def is_git_repo(folder: Path) -> bool:
     try:
@@ -108,12 +106,12 @@ def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
-def repo_issues(folder: Path) -> dict[str, Any]:
+def repo_issues(folder: Path, verbose: bool) -> dict[str, Any]:
     try:
         repo = Repo(folder)
     except InvalidGitRepositoryError:
         return {"is_git": False}
-    if VERBOSE:
+    if verbose:
         print(folder.name)
     repo_st = {
         k: v
@@ -137,18 +135,20 @@ def repo_issues(folder: Path) -> dict[str, Any]:
 
 
 def _all_repos_issues(
-    basedir: Path, recurse: int = 3, exclude_dirs: list[str] or None = None
+    basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
 ) -> dict[Path, dict[str, Any]]:
     exclude_dirs = exclude_dirs or []
     issues = {}
     for folder in basedir.glob("*"):
         if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
             continue
-        summary = repo_issues(folder)
+        summary = repo_issues(folder, verbose)
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
         else:
-            subfolder_summary = _all_repos_issues(folder, recurse - 1)
+            subfolder_summary = _all_repos_issues(
+                folder, recurse - 1, verbose, exclude_dirs
+            )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
                 issues.update(subfolder_summary)
                 sym_links = [p.name for p in folder.glob("*") if p.is_symlink()]
@@ -172,12 +172,12 @@ def _all_repos_issues(
 
 
 def all_repos_issues(
-    basedir: Path, recurse: int = 3, exclude_dirs: list[str] or None = None
+    basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
     if is_git_repo(basedir):
-        return {".": repo_issues(basedir)}
-    issues = _all_repos_issues(basedir, recurse, exclude_dirs)
+        return {".": repo_issues(basedir, verbose)}
+    issues = _all_repos_issues(basedir, recurse, verbose, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
     if basedir_files:
@@ -240,7 +240,11 @@ def main() -> None:
     parser.add_argument(
         "-l", "--include_ok", action="store_true", help="show also repos without issues"
     )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="don't show progress"
+    )
     args = parser.parse_args()
+    verbose = not args.quiet
     basedir = args.DIRECTORY
     if args.fetch:
         all_fetch_remotes(
@@ -250,10 +254,8 @@ def main() -> None:
             exclude=args.exclude_remote,
             exclude_dirs=args.exclude_dir,
         )
-    issues = all_repos_issues(
-        basedir, recurse=args.recurse, exclude_dirs=args.exclude_dir
-    )
-    if VERBOSE:
+    issues = all_repos_issues(basedir, args.recurse, verbose, args.exclude_dir)
+    if verbose:
         print()
     print(format_report(issues, include_ok=args.include_ok, fmt=args.format))
 
