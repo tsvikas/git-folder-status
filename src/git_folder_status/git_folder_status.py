@@ -8,7 +8,7 @@ from git.refs.head import Head
 from git.remote import FetchInfo
 
 
-def get_git_repo(folder: Path, *, search_parents=False) -> Repo | None:
+def get_git_repo(folder: Path, *, search_parents: bool = False) -> Repo | None:
     try:
         return Repo(folder, search_parent_directories=search_parents)
     except InvalidGitRepositoryError:
@@ -34,6 +34,7 @@ def fetch_remotes_in_subfolders(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
+    *,
     change_to_relative: bool = True,
 ) -> list[Path]:
     basedir = Path(basedir)
