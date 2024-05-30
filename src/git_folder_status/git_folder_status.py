@@ -177,6 +177,7 @@ def issues_for_all_subfolders(
     basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
+    # if we are in a git repo, we only check this repo:
     if repo := get_git_repo(basedir, search_parents=True):
         basedir_working_dir = Path(repo.working_tree_dir)
         try:
@@ -187,8 +188,10 @@ def issues_for_all_subfolders(
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
         return {from_basedir: issues_for_one_folder(basedir_working_dir, verbose)}
+    # otherwise we check all subfolders:
     issues = _issues_for_all_subfolders(basedir, recurse, verbose, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
+    # and we check the basedir itself:
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
     if basedir_files:
         issues["."] = {"untracked_files": shorten_filelist(basedir_files)}
