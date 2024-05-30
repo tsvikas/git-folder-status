@@ -211,8 +211,7 @@ def format_report(issues: dict, *, include_ok: bool, fmt: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="git-state",
-        description="find all unpushed data in a directory",
+        prog="git-state", description="find all unpushed data in a directory"
     )
     parser.add_argument("DIRECTORY", help="directory to check")
     parser.add_argument(
