@@ -57,7 +57,7 @@ def all_fetch_remotes(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
-) -> list[Path]:
+) -> list[str]:
     fetched = _all_fetch_remotes(basedir, recurse, include, exclude, exclude_dirs)
     return [p.relative_to(basedir).as_posix() for p in fetched]
 
