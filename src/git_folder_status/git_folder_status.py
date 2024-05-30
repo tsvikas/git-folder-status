@@ -39,8 +39,13 @@ def fetch_remotes_in_subfolders(
 ) -> list[Path]:
     basedir = Path(basedir)
     if repo := get_git_repo(basedir):
-        fetch_remotes(repo, include, exclude)
-        return [basedir]
+        print(f"fetching {basedir}")
+        try:
+            fetch_remotes(repo, include, exclude)
+            return [basedir]
+        except Exception as e:
+            print(f"error fetching {basedir}: {e}")
+            return []
     if recurse == 0:
         return []
 
@@ -266,6 +271,7 @@ def main() -> None:
             exclude=args.exclude_remote,
             exclude_dirs=args.exclude_dir,
         )
+        print()
     issues = issues_for_all_subfolders(
         basedir, args.recurse, args.list_repos, args.exclude_dir
     )
