@@ -176,8 +176,14 @@ def all_repos_issues(
     basedir = Path(basedir)
     if repo := get_git_repo(basedir, search_parents=True):
         basedir_working_dir = Path(repo.working_tree_dir)
-        from_basedir = basedir_working_dir.relative_to(basedir.resolve(), walk_up=True)
-        return {from_basedir.as_posix(): repo_issues(basedir_working_dir, verbose)}
+        try:
+            from_basedir = basedir_working_dir.relative_to(
+                basedir.resolve(), walk_up=True
+            ).as_posix()
+        except TypeError:
+            # walk_up is not supported in python < 3.12
+            from_basedir = "<this repos>"
+        return {from_basedir: repo_issues(basedir_working_dir, verbose)}
     issues = _all_repos_issues(basedir, recurse, verbose, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
