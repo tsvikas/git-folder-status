@@ -185,7 +185,7 @@ def all_repos_issues(
     return issues
 
 
-def format_report(issues: dict, include_ok: bool = False, fmt: str = "pprint") -> str:
+def format_report(issues: dict, *, include_ok: bool, fmt: str) -> str:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
