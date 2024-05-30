@@ -28,12 +28,13 @@ def fetch_remotes(
     return {remote.name: remote.fetch() for remote in remotes}
 
 
-def _fetch_remotes_in_subfolders(
+def fetch_remotes_in_subfolders(
     basedir: Path,
     recurse: int = 3,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
+    change_to_relative: bool = True,
 ) -> list[Path]:
     basedir = Path(basedir)
     if repo := get_git_repo(basedir):
@@ -48,22 +49,13 @@ def _fetch_remotes_in_subfolders(
         if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
             continue
         fetched.extend(
-            _fetch_remotes_in_subfolders(folder, recurse - 1, include, exclude)
+            fetch_remotes_in_subfolders(
+                folder, recurse - 1, include, exclude, change_to_relative=False
+            )
         )
+    if change_to_relative:
+        fetched = [p.relative_to(basedir) for p in fetched]
     return fetched
-
-
-def fetch_remotes_in_subfolders(
-    basedir: Path,
-    recurse: int = 3,
-    include: list[str] | None = None,
-    exclude: list[str] | None = None,
-    exclude_dirs: list[str] | None = None,
-) -> list[str]:
-    fetched = _fetch_remotes_in_subfolders(
-        basedir, recurse, include, exclude, exclude_dirs
-    )
-    return [p.relative_to(basedir).as_posix() for p in fetched]
 
 
 def shorten_filelist(filelist: list[str], limit: int = 10) -> list[str]:
