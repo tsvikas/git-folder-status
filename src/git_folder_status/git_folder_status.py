@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
+from typing import Any
 
 from git import InvalidGitRepositoryError, Repo
+from git.refs.head import Head
+from git.remote import FetchInfo
 
 VERBOSE = True
 
 
-def is_git_repo(folder: Path):
+def is_git_repo(folder: Path) -> bool:
     try:
         Repo(folder)
     except InvalidGitRepositoryError:
@@ -17,7 +20,7 @@ def is_git_repo(folder: Path):
 
 def fetch_remotes(
     repo: Repo, include: list[str] | None = None, exclude: list[str] | None = None
-):
+) -> dict[str : list[FetchInfo]]:
     remotes = list(repo.remotes)
     remotes = (
         remotes if (include is None) else [r for r in remotes if r.name in include]
@@ -34,7 +37,7 @@ def _all_fetch_remotes(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
-):
+) -> list[Path]:
     basedir = Path(basedir)
     if is_git_repo(basedir):
         fetch_remotes(Repo(basedir), include, exclude)
@@ -57,12 +60,12 @@ def all_fetch_remotes(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
-):
+) -> list[Path]:
     fetched = _all_fetch_remotes(basedir, recurse, include, exclude, exclude_dirs)
     return [p.relative_to(basedir).as_posix() for p in fetched]
 
 
-def shorten_filelist(filelist: list[str], limit=10):
+def shorten_filelist(filelist: list[str], limit: int = 10) -> list[str]:
     if len(filelist) <= limit:
         return filelist
     short_list = filelist[: limit // 2] + filelist[-limit // 2 :]
@@ -70,7 +73,7 @@ def shorten_filelist(filelist: list[str], limit=10):
     return short_list
 
 
-def repo_stats(repo: Repo):
+def repo_stats(repo: Repo) -> dict[str, Any]:
     untracked_files = shorten_filelist(repo.untracked_files)
     return {
         "is_dirty": repo.is_dirty(),
@@ -83,7 +86,7 @@ def repo_stats(repo: Repo):
     }
 
 
-def branch_status(repo: Repo, branch):
+def branch_status(repo: Repo, branch: Head) -> dict[str, Any]:
     if branch.tracking_branch() is None:
         return {"remote_branch": False}
     local_branch = branch.name
@@ -101,11 +104,11 @@ def branch_status(repo: Repo, branch):
     }
 
 
-def all_branches_status(repo: Repo):
+def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
-def repo_issues(folder: Path):
+def repo_issues(folder: Path) -> dict[str, Any]:
     try:
         repo = Repo(folder)
     except InvalidGitRepositoryError:
@@ -135,7 +138,7 @@ def repo_issues(folder: Path):
 
 def _all_repos_issues(
     basedir: Path, recurse: int = 3, exclude_dirs: list[str] or None = None
-):
+) -> dict[Path, dict[str, Any]]:
     exclude_dirs = exclude_dirs or []
     issues = {}
     for folder in basedir.glob("*"):
@@ -170,7 +173,7 @@ def _all_repos_issues(
 
 def all_repos_issues(
     basedir: Path, recurse: int = 3, exclude_dirs: list[str] or None = None
-):
+) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
     if is_git_repo(basedir):
         return {".": repo_issues(basedir)}
@@ -182,7 +185,7 @@ def all_repos_issues(
     return issues
 
 
-def format_report(issues: dict, include_ok: bool = False, fmt: str = "pprint"):
+def format_report(issues: dict, include_ok: bool = False, fmt: str = "pprint") -> str:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
@@ -206,7 +209,7 @@ def format_report(issues: dict, include_ok: bool = False, fmt: str = "pprint"):
     raise ValueError(f"format_report got an unsupported {fmt=}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="git-state",
         description="find all unpushed data in a directory",
