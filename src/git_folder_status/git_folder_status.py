@@ -8,12 +8,11 @@ from git.refs.head import Head
 from git.remote import FetchInfo
 
 
-def is_git_repo(folder: Path) -> bool:
+def get_git_repo(folder: Path, *, search_parents=False) -> Repo | None:
     try:
-        Repo(folder)
+        return Repo(folder, search_parent_directories=search_parents)
     except InvalidGitRepositoryError:
-        return False
-    return True
+        return None
 
 
 def fetch_remotes(
@@ -37,8 +36,8 @@ def _all_fetch_remotes(
     exclude_dirs: list[str] | None = None,
 ) -> list[Path]:
     basedir = Path(basedir)
-    if is_git_repo(basedir):
-        fetch_remotes(Repo(basedir), include, exclude)
+    if repo := get_git_repo(basedir):
+        fetch_remotes(repo, include, exclude)
         return [basedir]
     if recurse == 0:
         return []
@@ -175,8 +174,10 @@ def all_repos_issues(
     basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
-    if is_git_repo(basedir):
-        return {".": repo_issues(basedir, verbose)}
+    if repo := get_git_repo(basedir, search_parents=True):
+        basedir_working_dir = Path(repo.working_tree_dir)
+        from_basedir = basedir_working_dir.relative_to(basedir.resolve(), walk_up=True)
+        return {from_basedir.as_posix(): repo_issues(basedir_working_dir, verbose)}
     issues = _all_repos_issues(basedir, recurse, verbose, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
