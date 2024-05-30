@@ -201,7 +201,7 @@ def format_report(issues: dict, *, include_ok: bool, fmt: str) -> str:
     if fmt == "json":
         import json
 
-        return json.dumps(issues, indent=4)
+        return json.dumps(issues, indent=2)
     if fmt == "pprint":
         import pprint
 
