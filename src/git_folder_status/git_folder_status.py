@@ -30,12 +30,10 @@ def fetch_remotes(
     repo: Repo, include: list[str] | None = None, exclude: list[str] | None = None
 ) -> dict[str : list[FetchInfo]]:
     remotes = list(repo.remotes)
-    remotes = (
-        remotes if (include is None) else [r for r in remotes if r.name in include]
-    )
-    remotes = (
-        remotes if (exclude is None) else [r for r in remotes if r.name not in exclude]
-    )
+    if include is not None:
+        remotes = [r for r in remotes if r.name in include]
+    if exclude is not None:
+        remotes = [r for r in remotes if r.name not in exclude]
     return {remote.name: remote.fetch() for remote in remotes}
 
 
