@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+
+# Find all subdirectories with uncommitted or unpushed code.
+#
+# This script scans through a directory recursively to identify the status of
+# all Git repositories found within, highlighting repos with uncommitted
+# changes, untracked files, or branches out of sync with their remote
+# counterparts. It also identifies directories that are not Git repositories
+# and branches without a remote counterpart.
+# Additionally, it can fetch updates for all repositories discovered.
+#
+# Requires GitPython to be installed.
 import argparse
 from pathlib import Path
 from typing import Any
