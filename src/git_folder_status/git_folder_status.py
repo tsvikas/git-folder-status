@@ -24,6 +24,7 @@ import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from textwrap import indent
 from typing import Any
 
 from git import InvalidGitRepositoryError, Repo
@@ -38,46 +39,32 @@ def get_git_repo(folder: Path, *, search_parents: bool = False) -> Repo | None:
         return None
 
 
-async def fetch_remote(remote: Any) -> tuple[str, FetchInfo | None]:
+async def fetch_remote(remote: Any) -> str:
     """Fetch a single remote asynchronously using a thread pool."""
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as pool:
-        try:
-            fetch_info = await loop.run_in_executor(pool, remote.fetch)
-            return remote.name, fetch_info
-        except Exception as e:
-            print(f"Error fetching remote {remote.name}: {e}")
-            return remote.name, None
+        await loop.run_in_executor(pool, remote.fetch)
 
 
-async def fetch_remotes(
+async def fetch_single_repo(
     repo: Repo, include: list[str] | None = None, exclude: list[str] | None = None
-) -> dict[str, list[FetchInfo | None]]:
-    """Fetch all remotes asynchronously."""
+) -> dict[str, Exception | None]:
+    """Fetch all remotes for a single repository asynchronously."""
     remotes = list(repo.remotes)
     if include is not None:
         remotes = [r for r in remotes if r.name in include]
     if exclude is not None:
         remotes = [r for r in remotes if r.name not in exclude]
     fetch_tasks = [fetch_remote(remote) for remote in remotes]
-    results = await asyncio.gather(*fetch_tasks)
-    return dict(results)
-
-
-async def fetch_single_repo(
-    repo: Repo,
-    basedir: Path,
-    include: list[str] | None = None,
-    exclude: list[str] | None = None,
-) -> list[Path]:
-    """Fetch remotes for a single repository."""
-    print(f"fetching {basedir}")
-    try:
-        await fetch_remotes(repo, include, exclude)
-        return [basedir]
-    except Exception as e:
-        print(f"error fetching {basedir}: {e}")
-        return []
+    results = dict(
+        zip(
+            (remote.name for remote in remotes),
+            await asyncio.gather(*fetch_tasks, return_exceptions=True),
+        )
+    )
+    results_OK = {name: exc for name, exc in results.items() if exc is None}
+    results_exceptions = {name: exc for name, exc in results.items() if exc is not None}
+    return results_OK | results_exceptions
 
 
 async def fetch_remotes_in_subfolders(
@@ -87,18 +74,18 @@ async def fetch_remotes_in_subfolders(
     exclude: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
     *,
-    change_to_relative: bool = True,
-) -> list[Path]:
+    _recursive_head: bool = True,
+) -> dict[tuple[Path, str], Exception | None]:
     basedir = Path(basedir)
     exclude_dirs = exclude_dirs or []
 
     if repo := get_git_repo(basedir):
-        return await fetch_single_repo(repo, basedir, include, exclude)
+        result = await fetch_single_repo(repo, include, exclude)
+        return {(basedir, remote): status for remote, status in result.items()}
 
     if recurse == 0:
-        return []
+        return {}
 
-    fetched = []
     folders = [
         folder
         for folder in basedir.glob("*")
@@ -113,16 +100,22 @@ async def fetch_remotes_in_subfolders(
             include,
             exclude,
             exclude_dirs=[],
-            change_to_relative=False,
+            _recursive_head=False,
         )
         for folder in folders
     ]
-
     results = await asyncio.gather(*tasks)
+
+    fetched = {}
     for result in results:
-        fetched.extend(result)
-    if change_to_relative:
-        fetched = [p.relative_to(basedir) for p in fetched]
+        fetched = fetched | result
+
+    if _recursive_head:
+        for (p, remote), exc in fetched.items():
+            status = "✓" if exc is None else "𐄂"
+            print(f"{status} {p.relative_to(basedir).as_posix()}:{remote}")
+            if exc is not None:
+                print(indent(str(exc), "  "))
     return fetched
 
 
