@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
+"""
+Find all subdirectories with uncommitted or unpushed code.
 
-# Find all subdirectories with uncommitted or unpushed code.
-#
-# This script scans through a directory recursively to identify the status of
-# all Git repositories found within.
-#
-# It returns a list of repos/submodules with their issues, including:
-# * uncommitted changes
-# * untracked files
-# * stash entries
-# * detached head
-# * branches without remote
-# * branches with unpushed changes
-# * directories with any content that is not part of a repo.
-#
-#
-# Run `git-folder-status -h` for help.
-# Requires GitPython package
+This script scans through a directory recursively to identify the status of
+all Git repositories found within.
+
+It returns a list of repos/submodules with their issues, including:
+* uncommitted changes
+* untracked files
+* stash entries
+* detached head
+* branches without remote
+* branches with unpushed changes
+* directories with any content that is not part of a repo.
+
+
+Run `git-folder-status -h` for help.
+Requires GitPython package
+"""
 
 import argparse
 from pathlib import Path
