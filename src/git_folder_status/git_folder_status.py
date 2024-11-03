@@ -5,7 +5,7 @@
 # This script scans through a directory recursively to identify the status of
 # all Git repositories found within.
 #
-# It returns a list of repos with their issues, including:
+# It returns a list of repos/submodules with their issues, including:
 # * uncommitted changes
 # * untracked files
 # * stash entries
@@ -105,7 +105,12 @@ def issues_for_one_folder(folder: Path) -> dict[str, Any]:
         return {"is_git": False}
     repo_st = repo_issues_in_stats(repo)
     branches_st = repo_issues_in_branches(repo)
-    return repo_st | branches_st
+    submodules_st = {
+        f"/{submodule.path}": issues_for_one_folder(Path(submodule.abspath))
+        for submodule in repo.submodules
+    }
+    submodules_st = {k: v for k, v in submodules_st.items() if v}
+    return repo_st | branches_st | submodules_st
 
 
 def _issues_for_all_subfolders(
