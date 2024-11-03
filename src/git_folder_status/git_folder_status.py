@@ -5,16 +5,16 @@
 # This script scans through a directory recursively to identify the status of
 # all Git repositories found within.
 #
-# It returns a list repos with issues, including:
-# * repos with uncommitted changes
-# * repos with untracked files
-# * repos with stash entries
-# * repos with detached head
+# It returns a list of repos with teir issues, including:
+# * uncommitted changes
+# * untracked files
+# * stash entries
+# * detached head
 # * branches without remote
 # * branches with unpushed changes
 # * directories with any content that is not part of a repo.
 #
-# It can also fetch updates for all branches.
+# It can also fetch updates for all repos.
 #
 #
 # Run `git-folder-status -h` for help.
