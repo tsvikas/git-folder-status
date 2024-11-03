@@ -21,6 +21,8 @@
 # Requires GitPython to be used.
 
 import argparse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -36,18 +38,49 @@ def get_git_repo(folder: Path, *, search_parents: bool = False) -> Repo | None:
         return None
 
 
-def fetch_remotes(
+async def fetch_remote(remote: Any) -> tuple[str, FetchInfo | None]:
+    """Fetch a single remote asynchronously using a thread pool."""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as pool:
+        try:
+            fetch_info = await loop.run_in_executor(pool, remote.fetch)
+            return remote.name, fetch_info
+        except Exception as e:
+            print(f"Error fetching remote {remote.name}: {e}")
+            return remote.name, None
+
+
+async def fetch_remotes(
     repo: Repo, include: list[str] | None = None, exclude: list[str] | None = None
-) -> dict[str : list[FetchInfo]]:
+) -> dict[str, list[FetchInfo | None]]:
+    """Fetch all remotes asynchronously."""
     remotes = list(repo.remotes)
     if include is not None:
         remotes = [r for r in remotes if r.name in include]
     if exclude is not None:
         remotes = [r for r in remotes if r.name not in exclude]
-    return {remote.name: remote.fetch() for remote in remotes}
+    fetch_tasks = [fetch_remote(remote) for remote in remotes]
+    results = await asyncio.gather(*fetch_tasks)
+    return dict(results)
 
 
-def fetch_remotes_in_subfolders(
+async def fetch_single_repo(
+    repo: Repo,
+    basedir: Path,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> list[Path]:
+    """Fetch remotes for a single repository."""
+    print(f"fetching {basedir}")
+    try:
+        await fetch_remotes(repo, include, exclude)
+        return [basedir]
+    except Exception as e:
+        print(f"error fetching {basedir}: {e}")
+        return []
+
+
+async def fetch_remotes_in_subfolders(
     basedir: Path,
     recurse: int = 3,
     include: list[str] | None = None,
@@ -57,27 +90,37 @@ def fetch_remotes_in_subfolders(
     change_to_relative: bool = True,
 ) -> list[Path]:
     basedir = Path(basedir)
+    exclude_dirs = exclude_dirs or []
+
     if repo := get_git_repo(basedir):
-        print(f"fetching {basedir}")
-        try:
-            fetch_remotes(repo, include, exclude)
-            return [basedir]
-        except Exception as e:
-            print(f"error fetching {basedir}: {e}")
-            return []
+        return await fetch_single_repo(repo, basedir, include, exclude)
+
     if recurse == 0:
         return []
 
-    exclude_dirs = exclude_dirs or []
     fetched = []
-    for folder in basedir.glob("*"):
-        if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
-            continue
-        fetched.extend(
-            fetch_remotes_in_subfolders(
-                folder, recurse - 1, include, exclude, change_to_relative=False
-            )
+    folders = [
+        folder
+        for folder in basedir.glob("*")
+        if folder.is_dir()
+        and not folder.name.startswith(".")
+        and folder.name not in exclude_dirs
+    ]
+    tasks = [
+        fetch_remotes_in_subfolders(
+            folder,
+            recurse - 1,
+            include,
+            exclude,
+            exclude_dirs=[],
+            change_to_relative=False,
         )
+        for folder in folders
+    ]
+
+    results = await asyncio.gather(*tasks)
+    for result in results:
+        fetched.extend(result)
     if change_to_relative:
         fetched = [p.relative_to(basedir) for p in fetched]
     return fetched
@@ -284,12 +327,14 @@ def main() -> None:
     args = parser.parse_args()
     basedir = args.DIRECTORY
     if args.fetch:
-        fetch_remotes_in_subfolders(
-            basedir,
-            args.recurse,
-            include=args.include_remote,
-            exclude=args.exclude_remote,
-            exclude_dirs=args.exclude_dir,
+        asyncio.run(
+            fetch_remotes_in_subfolders(
+                basedir,
+                args.recurse,
+                include=args.include_remote,
+                exclude=args.exclude_remote,
+                exclude_dirs=args.exclude_dir,
+            )
         )
         print()
     issues = issues_for_all_subfolders(basedir, args.recurse, args.exclude_dir)
