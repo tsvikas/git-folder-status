@@ -73,7 +73,6 @@ def branch_status(repo: Repo, branch: Head) -> dict[str, Any]:
     commits_behind = repo.iter_commits(f"{local_branch}..{remote_branch}")
     commits_ahead = repo.iter_commits(f"{remote_branch}..{local_branch}")
     return {
-        # 'local_branch': local_branch,
         "remote_branch": remote_branch,
         "commits_behind": len(list(commits_behind)),
         "commits_ahead": len(list(commits_ahead)),
@@ -86,7 +85,7 @@ def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
 
 def repo_issues_in_branches(repo: Repo) -> dict[str, Any]:
     branches_st = all_branches_status(repo)
-    issues = dict()
+    issues = {}
     issues["branches_without_remote"] = [
         k for k, v in branches_st.items() if not v["remote_branch"]
     ]
