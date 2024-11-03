@@ -27,16 +27,16 @@ from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 
 
-def shorten_filelist(filelist: list[str], limit: int = 10) -> list[str]:
-    if len(filelist) <= limit:
-        return filelist
-    short_list = filelist[: limit // 2] + filelist[-limit // 2 :]
-    short_list[limit // 2] = f"<< {len(filelist) - limit + 1} more items >>"
+def shorten_list(items: list[str], limit: int = 10) -> list[str]:
+    if len(items) <= limit:
+        return items
+    short_list = items[: limit // 2] + items[-limit // 2 :]
+    short_list[limit // 2] = f"<< {len(items) - limit + 1} more items >>"
     return short_list
 
 
 def repo_stats(repo: Repo) -> dict[str, Any]:
-    untracked_files = shorten_filelist(repo.untracked_files)
+    untracked_files = shorten_list(repo.untracked_files)
     return {
         "is_dirty": repo.is_dirty(),
         "untracked_files": untracked_files,
@@ -139,11 +139,11 @@ def _issues_for_all_subfolders(
                 if untracked_files or sym_links:
                     issues[folder] = {"is_git": False}
                     if untracked_files:
-                        issues[folder]["untracked_files"] = shorten_filelist(
+                        issues[folder]["untracked_files"] = shorten_list(
                             untracked_files
                         )
                     if sym_links:
-                        issues[folder]["sym_links"] = shorten_filelist(sym_links)
+                        issues[folder]["sym_links"] = shorten_list(sym_links)
 
             else:
                 issues[folder] = {"is_git": False}
@@ -176,7 +176,7 @@ def issues_for_all_subfolders(
     # and we check the basedir itself:
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
     if basedir_files:
-        issues["."] = {"untracked_files": shorten_filelist(basedir_files)}
+        issues["."] = {"untracked_files": shorten_list(basedir_files)}
     return issues
 
 
