@@ -26,13 +26,6 @@ from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 
 
-def get_git_repo(folder: Path, *, search_parents: bool = False) -> Repo | None:
-    try:
-        return Repo(folder, search_parent_directories=search_parents)
-    except InvalidGitRepositoryError:
-        return None
-
-
 def shorten_filelist(filelist: list[str], limit: int = 10) -> list[str]:
     if len(filelist) <= limit:
         return filelist
@@ -157,7 +150,11 @@ def issues_for_all_subfolders(
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
     # if we are in a git repo, we only check this repo:
-    if repo := get_git_repo(basedir, search_parents=True):
+    try:
+        repo = Repo(basedir, search_parent_directories=True)
+    except InvalidGitRepositoryError:
+        pass
+    else:
         basedir_working_dir = Path(repo.working_tree_dir)
         try:
             from_basedir = basedir_working_dir.relative_to(
@@ -167,6 +164,7 @@ def issues_for_all_subfolders(
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
         return {from_basedir: issues_for_one_folder(basedir_working_dir)}
+
     # otherwise we check all subfolders:
     issues = _issues_for_all_subfolders(basedir, recurse, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
