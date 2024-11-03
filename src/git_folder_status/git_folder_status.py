@@ -91,11 +91,12 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
         # 'head': repo.head.commit.hexsha,
         "branches": {b.name: b.commit.hexsha for b in repo.branches},
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
+        "stash_count": len(repo.git.stash('list').splitlines()),
     }
 
 
 def repo_issues_in_stats(repo: Repo) -> dict[str, Any]:
-    stats_to_include = {"is_dirty", "untracked_files"}
+    stats_to_include = {"is_dirty", "untracked_files", "stash_count"}
     stats = repo_stats(repo)
     issues = {k: stats.get(k, None) for k in stats_to_include}
     issues = {k: v for k, v in issues.items() if v}
