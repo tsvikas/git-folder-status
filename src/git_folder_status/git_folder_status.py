@@ -101,12 +101,17 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
         "head_commit_hash_short": repo.head.commit.hexsha[:7],
         "branches": {b.name: b.commit.hexsha for b in repo.branches},
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
-        "stash_count": len(repo.git.stash('list').splitlines()),
+        "stash_count": len(repo.git.stash("list").splitlines()),
     }
 
 
 def repo_issues_in_stats(repo: Repo) -> dict[str, Any]:
-    stats_to_include = {"is_dirty", "untracked_files", "stash_count", "is_detached_head"}
+    stats_to_include = {
+        "is_dirty",
+        "untracked_files",
+        "stash_count",
+        "is_detached_head",
+    }
     stats = repo_stats(repo)
     issues = {k: stats.get(k, None) for k in stats_to_include}
     issues = {k: v for k, v in issues.items() if v}
@@ -252,7 +257,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="git-folder-status", description="find all unpushed data in a directory"
     )
-    parser.add_argument("DIRECTORY", help="directory to check", default=".", nargs='?')
+    parser.add_argument("DIRECTORY", help="directory to check", default=".", nargs="?")
     parser.add_argument(
         "-r", "--recurse", type=int, default=3, help="max recurse in directories"
     )
