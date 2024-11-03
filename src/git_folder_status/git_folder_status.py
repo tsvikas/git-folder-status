@@ -3,13 +3,23 @@
 # Find all subdirectories with uncommitted or unpushed code.
 #
 # This script scans through a directory recursively to identify the status of
-# all Git repositories found within, highlighting repos with uncommitted
-# changes, untracked files, or branches out of sync with their remote
-# counterparts. It also identifies directories that are not Git repositories
-# and branches without a remote counterpart.
-# Additionally, it can fetch updates for all repositories discovered.
+# all Git repositories found within.
 #
-# Requires GitPython to be installed.
+# It returns a list repos with issues, including:
+# * repos with uncommitted changes
+# * repos with untracked files
+# * repos with stash entries
+# * repos with detached head
+# * branches without remote
+# * branches with unpushed changes
+# * directories with any content that is not part of a repo.
+#
+# It can also fetch updates for all branches.
+#
+#
+# Run `git-folder-status -h` for help.
+# Requires GitPython to be used.
+
 import argparse
 from pathlib import Path
 from typing import Any
