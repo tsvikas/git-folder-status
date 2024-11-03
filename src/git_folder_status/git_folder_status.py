@@ -86,9 +86,9 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
     return {
         "is_dirty": repo.is_dirty(),
         "untracked_files": untracked_files,
-        "active_branch": repo.active_branch.name,
-        # TODO: add head if in detached mode
-        # 'head': repo.head.commit.hexsha,
+        "is_detached_head": repo.head.is_detached,
+        "active_branch": None if repo.head.is_detached else repo.active_branch.name,
+        "head_commit_hash_short": repo.head.commit.hexsha[:7],
         "branches": {b.name: b.commit.hexsha for b in repo.branches},
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
         "stash_count": len(repo.git.stash('list').splitlines()),
@@ -96,7 +96,7 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
 
 
 def repo_issues_in_stats(repo: Repo) -> dict[str, Any]:
-    stats_to_include = {"is_dirty", "untracked_files", "stash_count"}
+    stats_to_include = {"is_dirty", "untracked_files", "stash_count", "is_detached_head"}
     stats = repo_stats(repo)
     issues = {k: stats.get(k, None) for k in stats_to_include}
     issues = {k: v for k, v in issues.items() if v}
