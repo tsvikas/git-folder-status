@@ -5,7 +5,7 @@
 # This script scans through a directory recursively to identify the status of
 # all Git repositories found within.
 #
-# It returns a list of repos with teir issues, including:
+# It returns a list of repos with their issues, including:
 # * uncommitted changes
 # * untracked files
 # * stash entries
