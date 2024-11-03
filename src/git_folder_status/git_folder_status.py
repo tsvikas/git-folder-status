@@ -16,7 +16,7 @@
 #
 #
 # Run `git-folder-status -h` for help.
-# Requires GitPython to be used.
+# Requires GitPython package
 
 import argparse
 from pathlib import Path
