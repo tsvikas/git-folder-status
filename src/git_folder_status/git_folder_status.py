@@ -252,7 +252,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="git-folder-status", description="find all unpushed data in a directory"
     )
-    parser.add_argument("DIRECTORY", help="directory to check")
+    parser.add_argument("DIRECTORY", help="directory to check", default=".", nargs='?')
     parser.add_argument(
         "-r", "--recurse", type=int, default=3, help="max recurse in directories"
     )
