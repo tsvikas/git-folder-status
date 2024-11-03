@@ -155,32 +155,30 @@ def repo_issues_in_branches(repo: Repo) -> dict[str, Any]:
     return issues
 
 
-def issues_for_one_folder(folder: Path, verbose: bool) -> dict[str, Any]:
+def issues_for_one_folder(folder: Path) -> dict[str, Any]:
     try:
         repo = Repo(folder)
     except InvalidGitRepositoryError:
         return {"is_git": False}
-    if verbose:
-        print(folder.name)
     repo_st = repo_issues_in_stats(repo)
     branches_st = repo_issues_in_branches(repo)
     return repo_st | branches_st
 
 
 def _issues_for_all_subfolders(
-    basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
+    basedir: Path, recurse: int, exclude_dirs: list[str] or None = None
 ) -> dict[Path, dict[str, Any]]:
     exclude_dirs = exclude_dirs or []
     issues = {}
     for folder in basedir.glob("*"):
         if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
             continue
-        summary = issues_for_one_folder(folder, verbose)
+        summary = issues_for_one_folder(folder)
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
         else:
             subfolder_summary = _issues_for_all_subfolders(
-                folder, recurse - 1, verbose, exclude_dirs
+                folder, recurse - 1, exclude_dirs
             )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
                 issues.update(subfolder_summary)
@@ -205,7 +203,7 @@ def _issues_for_all_subfolders(
 
 
 def issues_for_all_subfolders(
-    basedir: Path, recurse: int, verbose: bool, exclude_dirs: list[str] or None = None
+    basedir: Path, recurse: int, exclude_dirs: list[str] or None = None
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
     # if we are in a git repo, we only check this repo:
@@ -218,9 +216,9 @@ def issues_for_all_subfolders(
         except TypeError:
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
-        return {from_basedir: issues_for_one_folder(basedir_working_dir, verbose)}
+        return {from_basedir: issues_for_one_folder(basedir_working_dir)}
     # otherwise we check all subfolders:
-    issues = _issues_for_all_subfolders(basedir, recurse, verbose, exclude_dirs)
+    issues = _issues_for_all_subfolders(basedir, recurse, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     # and we check the basedir itself:
     basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
@@ -283,9 +281,6 @@ def main() -> None:
     parser.add_argument(
         "-k", "--include-ok", action="store_true", help="show also repos without issues"
     )
-    parser.add_argument(
-        "-l", "--list-repos", action="store_true", help="print names of all repos"
-    )
     args = parser.parse_args()
     basedir = args.DIRECTORY
     if args.fetch:
@@ -297,11 +292,7 @@ def main() -> None:
             exclude_dirs=args.exclude_dir,
         )
         print()
-    issues = issues_for_all_subfolders(
-        basedir, args.recurse, args.list_repos, args.exclude_dir
-    )
-    if args.list_repos:
-        print()
+    issues = issues_for_all_subfolders(basedir, args.recurse, args.exclude_dir)
     print(format_report(issues, include_ok=args.include_ok, fmt=args.format))
 
 
