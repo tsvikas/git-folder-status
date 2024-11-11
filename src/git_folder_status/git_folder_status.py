@@ -13,6 +13,7 @@ It returns a list of repos/submodules with their issues, including:
 * branches without remote
 * branches with unpushed changes
 * directories with any content that is not part of a repo.
+* broken links outside repos
 
 
 Run `git-folder-status -h` for help.
@@ -119,7 +120,13 @@ def _issues_for_all_subfolders(
     exclude_dirs = exclude_dirs or []
     issues = {}
     for folder in basedir.glob("*"):
-        if not folder.is_dir() or folder.name[0] == "." or folder.name in exclude_dirs:
+        if folder.name[0] == "." or folder.name in exclude_dirs:
+            continue
+        try:
+            if not folder.is_dir():
+                continue
+        except OSError:
+            issues[folder] = {"broken_link": folder.readlink().as_posix()}
             continue
         summary = issues_for_one_folder(folder)
         if summary.get("is_git", True) or recurse <= 0:
@@ -174,10 +181,18 @@ def issues_for_all_subfolders(
     issues = _issues_for_all_subfolders(basedir, recurse, exclude_dirs)
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
     # and we check the basedir itself:
-    basedir_files = [p.name for p in basedir.glob("*") if p.is_file()]
+    basedir_files = [p.name for p in basedir.glob("*") if is_file(p)]
     if basedir_files:
         issues["."] = {"untracked_files": shorten_list(basedir_files)}
     return issues
+
+
+def is_file(p: Path):
+    try:
+        return p.is_file()
+    except OSError:
+        # broken link, was reported earlier
+        return False
 
 
 def format_report(issues: dict, *, include_ok: bool, fmt: str) -> str:
