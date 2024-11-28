@@ -38,12 +38,18 @@ def shorten_list(items: list[str], limit: int = 10) -> list[str]:
 
 def repo_stats(repo: Repo) -> dict[str, Any]:
     untracked_files = shorten_list(repo.untracked_files)
+    head = repo.head
+    try:
+        commit = head.commit
+    except ValueError:
+        # handle an empty repo
+        commit = None
     return {
         "is_dirty": repo.is_dirty(),
         "untracked_files": untracked_files,
-        "is_detached_head": repo.head.is_detached,
-        "active_branch": None if repo.head.is_detached else repo.active_branch.name,
-        "head_commit_hash_short": repo.head.commit.hexsha[:7],
+        "is_detached_head": head.is_detached,
+        "active_branch": None if head.is_detached else repo.active_branch.name,
+        "head_commit_hash_short": commit.hexsha[:7] if commit else None,
         "branches": {b.name: b.commit.hexsha for b in repo.branches},
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
         "stash_count": len(repo.git.stash("list").splitlines()),
