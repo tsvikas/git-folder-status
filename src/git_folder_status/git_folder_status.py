@@ -107,7 +107,7 @@ def repo_issues_in_branches(repo: Repo) -> dict[str, Any]:
 
 def issues_for_one_folder(folder: Path) -> dict[str, Any]:
     try:
-        repo = Repo(folder)
+        repo = Repo(folder.resolve())
     except InvalidGitRepositoryError:
         return {"is_git": False}
     try:
