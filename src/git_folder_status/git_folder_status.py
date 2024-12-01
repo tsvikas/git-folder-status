@@ -110,14 +110,17 @@ def issues_for_one_folder(folder: Path) -> dict[str, Any]:
         repo = Repo(folder)
     except InvalidGitRepositoryError:
         return {"is_git": False}
-    repo_st = repo_issues_in_stats(repo)
-    branches_st = repo_issues_in_branches(repo)
-    submodules_st = {
-        f"/{submodule.path}": issues_for_one_folder(Path(submodule.abspath))
-        for submodule in repo.submodules
-    }
-    submodules_st = {k: v for k, v in submodules_st.items() if v}
-    return repo_st | branches_st | submodules_st
+    try:
+        repo_st = repo_issues_in_stats(repo)
+        branches_st = repo_issues_in_branches(repo)
+        submodules_st = {
+            f"/{submodule.path}": issues_for_one_folder(Path(submodule.abspath))
+            for submodule in repo.submodules
+        }
+        submodules_st = {k: v for k, v in submodules_st.items() if v}
+        return repo_st | branches_st | submodules_st
+    except Exception as e:
+        raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
 
 
 def _issues_for_all_subfolders(
