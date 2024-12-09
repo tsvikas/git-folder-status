@@ -110,19 +110,22 @@ def repo_issues_in_branches(repo: Repo, slow: bool) -> dict[str, Any]:
 def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
     assert "origin" in repo.remotes, f"repo has no remote origin, only {repo.remotes}"
     local_tags = {tag.path: tag.commit.hexsha for tag in repo.tags}
-    remote_tags = dict(
-        [
-            line.split("\t")[::-1]
-            for line in repo.git.ls_remote("--tags", "origin").splitlines()
-        ]
-    )
     issues = {}
-    issues["tags_local_only"] = [tag for tag in local_tags if tag not in remote_tags]
-    issues["tags_mismatch"] = [
-        tag
-        for tag in local_tags
-        if tag in remote_tags and remote_tags[tag] != local_tags[tag]
-    ]
+    if slow:
+        remote_tags = dict(
+            [
+                line.split("\t")[::-1]
+                for line in repo.git.ls_remote("--tags", "origin").splitlines()
+            ]
+        )
+        issues["tags_local_only"] = [
+            tag for tag in local_tags if tag not in remote_tags
+        ]
+        issues["tags_mismatch"] = [
+            tag
+            for tag in local_tags
+            if tag in remote_tags and remote_tags[tag] != local_tags[tag]
+        ]
     issues = {k: v for k, v in issues.items() if v}
     return issues
 
