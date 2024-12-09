@@ -105,6 +105,27 @@ def repo_issues_in_branches(repo: Repo) -> dict[str, Any]:
     return issues
 
 
+def repo_issues_in_tags(repo: Repo) -> dict[str, Any]:
+    assert "origin" in repo.remotes, f"repo has no remote origin, only {repo.remotes}"
+    local_tags = {tag.path: tag.commit.hexsha for tag in repo.tags}
+    remote_tags = dict(
+        [
+            line.split("\t")[::-1]
+            for line in repo.git.ls_remote("--tags", "origin").splitlines()
+        ]
+    )
+    issues = {
+        "tags_local_only": [tag for tag in local_tags if tag not in remote_tags],
+        "tags_mismatch": [
+            tag
+            for tag in local_tags
+            if tag in remote_tags and remote_tags[tag] != local_tags[tag]
+        ],
+    }
+    issues = {k: v for k, v in issues.items() if v}
+    return issues
+
+
 def issues_for_one_folder(folder: Path) -> dict[str, Any]:
     try:
         repo = Repo(folder.resolve())
@@ -113,12 +134,13 @@ def issues_for_one_folder(folder: Path) -> dict[str, Any]:
     try:
         repo_st = repo_issues_in_stats(repo)
         branches_st = repo_issues_in_branches(repo)
+        tags_st = repo_issues_in_tags(repo)
         submodules_st = {
             f"/{submodule.path}": issues_for_one_folder(Path(submodule.abspath))
             for submodule in repo.submodules
         }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
-        return repo_st | branches_st | submodules_st
+        return repo_st | branches_st | tags_st | submodules_st
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
 
