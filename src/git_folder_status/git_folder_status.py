@@ -236,9 +236,13 @@ def is_file(p: Path):
         return False
 
 
+REPORT_FORMATS = ["yaml", "report", "json", "pprint"]
+REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
+
+
 def format_report(
-    issues: dict, *, include_ok: bool, fmt: Literal["yaml", "json", "pprint"]
-) -> str:
+    issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE
+) -> str | None:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
@@ -251,6 +255,19 @@ def format_report(
             indent=2,
             sort_keys=False,
         )
+    if fmt == "report":
+        if not issues:
+            return None
+        import yaml
+
+        report = yaml.dump(
+            issues,
+            allow_unicode=True,
+            default_flow_style=False,
+            indent=2,
+            sort_keys=False,
+        )
+        return "\033[31m" + report + "\033[0m"
     if fmt == "json":
         import json
 
@@ -277,7 +294,7 @@ def main() -> None:
         "-f",
         "--format",
         default="pprint",
-        choices=["pprint", "json", "yaml"],
+        choices=REPORT_FORMATS,
         help="output format",
     )
     parser.add_argument(
@@ -291,7 +308,9 @@ def main() -> None:
     issues = issues_for_all_subfolders(
         basedir, args.recurse, args.exclude_dir, args.slow
     )
-    print(format_report(issues, include_ok=args.include_ok, fmt=args.format))
+    report = format_report(issues, include_ok=args.include_ok, fmt=args.format)
+    if report is not None:
+        print(report)
 
 
 if __name__ == "__main__":
