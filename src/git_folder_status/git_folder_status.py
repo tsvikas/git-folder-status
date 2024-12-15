@@ -279,7 +279,7 @@ def format_report(
     raise ValueError(f"format_report got an unsupported {fmt=}")
 
 
-def main() -> None:
+def parse_args():
     parser = argparse.ArgumentParser(
         prog="git-folder-status", description="find all unpushed data in a directory"
     )
@@ -303,10 +303,13 @@ def main() -> None:
     parser.add_argument(
         "-s", "--slow", action="store_true", help="allow slow operations"
     )
-    args = parser.parse_args()
-    basedir = args.DIRECTORY
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
     issues = issues_for_all_subfolders(
-        basedir, args.recurse, args.exclude_dir, args.slow
+        args.DIRECTORY, args.recurse, args.exclude_dir, args.slow
     )
     report = format_report(issues, include_ok=args.include_ok, fmt=args.format)
     if report is not None:
