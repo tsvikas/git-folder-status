@@ -24,7 +24,7 @@ Requires GitPython package
 
 import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
@@ -94,7 +94,7 @@ def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
 
 def repo_issues_in_branches(repo: Repo, slow: bool) -> dict[str, Any]:
     branches_st = all_branches_status(repo)
-    issues = {}
+    issues: dict[str, Any] = {}
     issues["branches_without_remote"] = [
         k for k, v in branches_st.items() if not v["remote_branch"]
     ]
@@ -152,11 +152,11 @@ def issues_for_one_folder(folder: Path, slow: bool) -> dict[str, Any]:
 def _issues_for_all_subfolders(
     basedir: Path,
     recurse: int,
-    exclude_dirs: list[str] or None = None,
+    exclude_dirs: list[str] | None = None,
     slow: bool = False,
 ) -> dict[Path, dict[str, Any]]:
     exclude_dirs = exclude_dirs or []
-    issues = {}
+    issues: dict[Path, dict[str, Any]] = {}
     for folder in basedir.glob("*"):
         if folder.name[0] == "." or folder.name in exclude_dirs:
             continue
@@ -198,7 +198,7 @@ def _issues_for_all_subfolders(
 def issues_for_all_subfolders(
     basedir: Path,
     recurse: int,
-    exclude_dirs: list[str] or None = None,
+    exclude_dirs: list[str] | None = None,
     slow: bool = False,
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
@@ -219,8 +219,8 @@ def issues_for_all_subfolders(
         return {from_basedir: issues_for_one_folder(basedir_working_dir, slow)}
 
     # otherwise we check all subfolders:
-    issues = _issues_for_all_subfolders(basedir, recurse, exclude_dirs, slow)
-    issues = {k.relative_to(basedir).as_posix(): v for k, v in issues.items()}
+    issues_by_path = _issues_for_all_subfolders(basedir, recurse, exclude_dirs, slow)
+    issues = {k.relative_to(basedir).as_posix(): v for k, v in issues_by_path.items()}
     # and we check the basedir itself:
     basedir_files = [p.name for p in basedir.glob("*") if is_file(p)]
     if basedir_files:
@@ -236,7 +236,9 @@ def is_file(p: Path):
         return False
 
 
-def format_report(issues: dict, *, include_ok: bool, fmt: str) -> str:
+def format_report(
+    issues: dict, *, include_ok: bool, fmt: Literal["yaml", "json", "pprint"]
+) -> str:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
