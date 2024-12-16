@@ -108,7 +108,8 @@ def repo_issues_in_branches(repo: Repo, slow: bool) -> dict[str, Any]:
 
 
 def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
-    assert "origin" in repo.remotes, f"repo has no remote origin, only {repo.remotes}"
+    if "origin" not in repo.remotes:
+        return {"missing_remote": "origin"}
     local_tags = {tag.path: tag.commit.hexsha for tag in repo.tags}
     issues = {}
     if slow:
