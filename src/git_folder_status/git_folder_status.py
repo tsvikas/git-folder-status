@@ -141,7 +141,11 @@ def issues_for_one_folder(folder: Path, slow: bool) -> dict[str, Any]:
         branches_st = repo_issues_in_branches(repo, slow)
         tags_st = repo_issues_in_tags(repo, slow)
         submodules_st = {
-            f"/{submodule.path}": issues_for_one_folder(Path(submodule.abspath), slow)
+            f"/{submodule.path}": {
+                k: v
+                for k, v in issues_for_one_folder(Path(submodule.abspath), slow).items()
+                if k not in ["is_detached_head"]
+            }
             for submodule in repo.submodules
         }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
