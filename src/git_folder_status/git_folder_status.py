@@ -133,7 +133,7 @@ def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
 
 def issues_for_one_folder(folder: Path, slow: bool) -> dict[str, Any]:
     try:
-        repo = Repo(folder.resolve())
+        repo = Repo(folder.resolve(), search_parent_directories=folder.is_symlink())
     except InvalidGitRepositoryError:
         return {"is_git": False}
     try:
