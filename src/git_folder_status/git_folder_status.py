@@ -265,14 +265,18 @@ def format_report(
             return None
         import yaml
 
-        report = yaml.dump(
+        report_lines = yaml.dump(
             issues,
             allow_unicode=True,
             default_flow_style=False,
             indent=2,
             sort_keys=False,
+        ).splitlines()
+        report = "\n".join(
+            "\033[91m" + line + "\033[0m" if line and line[0] != " " else line
+            for line in report_lines
         )
-        return "\033[31m" + report + "\033[0m"
+        return report
     if fmt == "json":
         import json
 
