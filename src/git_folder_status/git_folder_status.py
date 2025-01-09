@@ -119,13 +119,18 @@ def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
                 for line in repo.git.ls_remote("--tags", "origin").splitlines()
             ]
         )
+        remote_tags2 = {
+            k.removesuffix("^{}"): v
+            for k, v in remote_tags.items()
+            if k.endswith("^{}")
+        }
         issues["tags_local_only"] = [
-            tag for tag in local_tags if tag not in remote_tags
+            tag for tag in local_tags if tag not in remote_tags2
         ]
         issues["tags_mismatch"] = [
-            tag
+            {tag: {"local": local_tags[tag], "remote": remote_tags2[tag]}}
             for tag in local_tags
-            if tag in remote_tags and remote_tags[tag] != local_tags[tag]
+            if tag in remote_tags2 and remote_tags2[tag] != local_tags[tag]
         ]
     issues = {k: v for k, v in issues.items() if v}
     return issues
