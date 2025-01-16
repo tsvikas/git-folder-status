@@ -124,13 +124,14 @@ def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
             for k, v in remote_tags.items()
             if k.endswith("^{}")
         }
+        remote_tags3 = remote_tags | remote_tags2
         issues["tags_local_only"] = [
-            tag for tag in local_tags if tag not in remote_tags2
+            tag for tag in local_tags if tag not in remote_tags3
         ]
         issues["tags_mismatch"] = [
-            {tag: {"local": local_tags[tag], "remote": remote_tags2[tag]}}
+            {tag: {"local": local_tags[tag], "remote": remote_tags3[tag]}}
             for tag in local_tags
-            if tag in remote_tags2 and remote_tags2[tag] != local_tags[tag]
+            if tag in remote_tags3 and remote_tags3[tag] != local_tags[tag]
         ]
     issues = {k: v for k, v in issues.items() if v}
     return issues
