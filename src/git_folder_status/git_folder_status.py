@@ -259,7 +259,7 @@ REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
 
 def format_report(
     issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE
-) -> str | None:
+) -> str:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
@@ -274,7 +274,7 @@ def format_report(
         )
     if fmt == "report":
         if not issues:
-            return None
+            return ""
         import yaml
 
         report_lines = yaml.dump(
@@ -332,8 +332,13 @@ def main() -> None:
     issues = issues_for_all_subfolders(
         args.DIRECTORY, args.recurse, args.exclude_dir, args.slow
     )
-    report = format_report(issues, include_ok=args.include_ok, fmt=args.format)
-    if report is not None:
+    try:
+        report = format_report(issues, include_ok=args.include_ok, fmt=args.format)
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            "Missing module for format. Try a different format or a newer python."
+        ) from e
+    else:
         print(report)
 
 
