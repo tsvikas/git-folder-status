@@ -257,9 +257,7 @@ REPORT_FORMATS = ["yaml", "report", "json", "pprint"]
 REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
 
 
-def format_report(
-    issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE
-) -> str:
+def format_report(issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE) -> str:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
