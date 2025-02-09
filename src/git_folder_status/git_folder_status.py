@@ -245,7 +245,7 @@ def issues_for_all_subfolders(
     return issues
 
 
-def is_file(p: Path):
+def is_file(p: Path) -> bool:
     try:
         return p.is_file()
     except OSError:
@@ -298,7 +298,7 @@ def format_report(issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE) -
     raise ValueError(f"format_report got an unsupported {fmt=}")
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="git-folder-status", description="find all unpushed data in a directory"
     )
