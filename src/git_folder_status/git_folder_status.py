@@ -64,7 +64,7 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
     }
 
 
-def repo_issues_in_stats(repo: Repo, slow: bool) -> dict[str, Any]:
+def repo_issues_in_stats(repo: Repo, *, slow: bool) -> dict[str, Any]:
     stats_to_include = {
         "is_dirty",
         "untracked_files",
@@ -98,7 +98,7 @@ def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
-def repo_issues_in_branches(repo: Repo, slow: bool) -> dict[str, Any]:
+def repo_issues_in_branches(repo: Repo, *, slow: bool) -> dict[str, Any]:
     branches_st = all_branches_status(repo)
     issues: dict[str, Any] = {}
     issues["branches_without_remote"] = [
@@ -113,7 +113,7 @@ def repo_issues_in_branches(repo: Repo, slow: bool) -> dict[str, Any]:
     return issues
 
 
-def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
+def repo_issues_in_tags(repo: Repo, *, slow: bool) -> dict[str, Any]:
     if "origin" not in repo.remotes:
         return {"missing_remote": "origin"}
     local_tags = {tag.path: tag.commit.hexsha for tag in repo.tags}
@@ -143,19 +143,21 @@ def repo_issues_in_tags(repo: Repo, slow: bool) -> dict[str, Any]:
     return issues
 
 
-def issues_for_one_folder(folder: Path, slow: bool) -> dict[str, Any]:
+def issues_for_one_folder(folder: Path, *, slow: bool) -> dict[str, Any]:
     try:
         repo = Repo(folder.resolve(), search_parent_directories=folder.is_symlink())
     except InvalidGitRepositoryError:
         return {"is_git": False}
     try:
-        repo_st = repo_issues_in_stats(repo, slow)
-        branches_st = repo_issues_in_branches(repo, slow)
-        tags_st = repo_issues_in_tags(repo, slow)
+        repo_st = repo_issues_in_stats(repo, slow=slow)
+        branches_st = repo_issues_in_branches(repo, slow=slow)
+        tags_st = repo_issues_in_tags(repo, slow=slow)
         submodules_st = {
             f"/{submodule.path}": {
                 k: v
-                for k, v in issues_for_one_folder(Path(submodule.abspath), slow).items()
+                for k, v in issues_for_one_folder(
+                    Path(submodule.abspath), slow=slow
+                ).items()
                 if k not in ["is_detached_head"]
             }
             for submodule in repo.submodules
@@ -170,6 +172,7 @@ def _issues_for_all_subfolders(
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
+    *,
     slow: bool = False,
 ) -> dict[Path, dict[str, Any]]:
     exclude_dirs = exclude_dirs or []
@@ -183,12 +186,12 @@ def _issues_for_all_subfolders(
         except OSError:
             issues[folder] = {"broken_link": folder.readlink().as_posix()}
             continue
-        summary = issues_for_one_folder(folder, slow)
+        summary = issues_for_one_folder(folder, slow=slow)
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
         else:
             subfolder_summary = _issues_for_all_subfolders(
-                folder, recurse - 1, exclude_dirs, slow
+                folder, recurse - 1, exclude_dirs, slow=slow
             )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
                 issues.update(subfolder_summary)
@@ -216,6 +219,7 @@ def issues_for_all_subfolders(
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
+    *,
     slow: bool = False,
 ) -> dict[str, dict[str, Any]]:
     basedir = Path(basedir)
@@ -233,10 +237,12 @@ def issues_for_all_subfolders(
         except TypeError:
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
-        return {from_basedir: issues_for_one_folder(basedir_working_dir, slow)}
+        return {from_basedir: issues_for_one_folder(basedir_working_dir, slow=slow)}
 
     # otherwise we check all subfolders:
-    issues_by_path = _issues_for_all_subfolders(basedir, recurse, exclude_dirs, slow)
+    issues_by_path = _issues_for_all_subfolders(
+        basedir, recurse, exclude_dirs, slow=slow
+    )
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues_by_path.items()}
     # and we check the basedir itself:
     basedir_files = [p.name for p in basedir.glob("*") if is_file(p)]
@@ -328,7 +334,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     issues = issues_for_all_subfolders(
-        args.DIRECTORY, args.recurse, args.exclude_dir, args.slow
+        args.DIRECTORY, args.recurse, args.exclude_dir, slow=args.slow
     )
     try:
         report = format_report(issues, include_ok=args.include_ok, fmt=args.format)
