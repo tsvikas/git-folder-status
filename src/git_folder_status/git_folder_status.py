@@ -281,6 +281,8 @@ def format_report(issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE) -
             return ""
         import yaml
 
+        red_color = "\033[91m"
+        normal_color = "\033[0m"
         report_lines = yaml.dump(
             issues,
             allow_unicode=True,
@@ -289,7 +291,11 @@ def format_report(issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE) -
             sort_keys=False,
         ).splitlines()
         report = "\n".join(
-            "\033[91m" + line + "\033[0m" if line and line[0] != " " else line
+            (
+                red_color + line + normal_color
+                if line and line[0] != " " and line[-2:] != "{}"
+                else line
+            )
             for line in report_lines
         )
         return report
