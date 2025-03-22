@@ -88,6 +88,8 @@ def branch_status(repo: Repo, branch: Head) -> dict[str, Any]:
     if remote_branch[0] == ".":
         # tracking a local branch
         return {"remote_branch": False}
+    if remote_branch not in repo.refs:
+        return {"remote_branch": remote_branch, "remote_branch_exists": False}
     commits_behind = repo.iter_commits(f"{local_branch}..{remote_branch}")
     commits_ahead = repo.iter_commits(f"{remote_branch}..{local_branch}")
     return {
@@ -109,16 +111,25 @@ def repo_issues_in_branches(
     issues["branches_without_remote"] = [
         k for k, v in branches_st.items() if not v["remote_branch"]
     ]
+    issues["branches_with_missing_remote"] = {
+        k: v["remote_branch"]
+        for k, v in branches_st.items()
+        if v["remote_branch"] and not v.get("remote_branch_exists", True)
+    }
     issues["branches_out_of_sync"] = {
         k: v
         for k, v in branches_st.items()
-        if v["remote_branch"] and (v["commits_behind"] or v["commits_ahead"])
+        if v["remote_branch"]
+        and v.get("remote_branch_exists", True)
+        and (v["commits_behind"] or v["commits_ahead"])
     }
     if include_all:
         issues["branches"] = {
             k: {kk: vv for kk, vv in v.items() if vv}
             for k, v in branches_st.items()
-            if v["remote_branch"] and not (v["commits_behind"] or v["commits_ahead"])
+            if v["remote_branch"]
+            and v.get("remote_branch_exists", True)
+            and not (v["commits_behind"] or v["commits_ahead"])
         }
     issues = {k: v for k, v in issues.items() if v}
     return issues
