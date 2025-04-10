@@ -36,7 +36,7 @@ def callback(
 ) -> None:
     """Awesome Portal Gun."""
     if ctx.invoked_subcommand is None:
-        raise UsageError("Missing command.")  # noqa: TRY003
+        raise UsageError("Missing command.")
 
 
 @app.command()

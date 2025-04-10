@@ -70,7 +70,9 @@ def repo_stats(repo: Repo) -> RepoStats:
     }
 
 
-def repo_issues_in_stats(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
+def repo_issues_in_stats(
+    repo: Repo, *, slow: bool, include_all: bool  # noqa: ARG001
+) -> RepoStats:
     stats_to_include = {
         "is_dirty",
         "untracked_files",
@@ -108,7 +110,9 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
-def repo_issues_in_branches(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
+def repo_issues_in_branches(
+    repo: Repo, *, slow: bool, include_all: bool  # noqa: ARG001
+) -> RepoStats:
     branches_st = all_branches_status(repo)
     issues: RepoStats = {}
     issues["branches_without_remote"] = [
@@ -190,14 +194,15 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
             for submodule in repo.submodules
         }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
-        assert isinstance(repo_st, dict)
-        assert isinstance(branches_st, dict)
-        assert isinstance(tags_st, dict)
-        assert isinstance(submodules_st, dict)
+        assert isinstance(repo_st, dict)  # noqa: S101
+        assert isinstance(branches_st, dict)  # noqa: S101
+        assert isinstance(tags_st, dict)  # noqa: S101
+        assert isinstance(submodules_st, dict)  # noqa: S101
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
-        return issues
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
+    else:
+        return issues
 
 
 def _issues_for_all_subfolders(
@@ -264,7 +269,7 @@ def issues_for_all_subfolders(
         pass
     else:
         working_tree_dir = repo.working_tree_dir
-        assert working_tree_dir is not None
+        assert working_tree_dir is not None  # noqa: S101
         basedir_working_dir = Path(working_tree_dir)
         if sys.version_info >= (3, 12):
             from_basedir = basedir_working_dir.relative_to(
@@ -398,7 +403,7 @@ def main() -> None:
             "Missing module for format. Try a different format or a newer python."
         ) from e
     else:
-        print(report)
+        print(report)  # noqa: T201
 
 
 if __name__ == "__main__":
