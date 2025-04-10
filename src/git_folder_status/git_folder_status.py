@@ -282,6 +282,7 @@ def issues_for_all_subfolders(
         assert working_tree_dir is not None  # noqa: S101
         basedir_working_dir = Path(working_tree_dir)
         if sys.version_info >= (3, 12):
+            # pylint: disable=unexpected-keyword-arg
             from_basedir = basedir_working_dir.relative_to(
                 basedir.resolve(), walk_up=True
             ).as_posix()
