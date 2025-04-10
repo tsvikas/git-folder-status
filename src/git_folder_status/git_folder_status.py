@@ -5,8 +5,7 @@
 #     "gitpython",
 # ]
 # ///
-"""
-Find all subdirectories with uncommitted or unpushed code.
+"""Find all subdirectories with uncommitted or unpushed code.
 
 This script scans through a directory recursively to identify the status of
 all Git repositories found within.
@@ -38,6 +37,7 @@ from git.refs.head import Head
 
 
 def shorten_list(items: list[str], limit: int = 10) -> list[str]:
+    """Truncate a list of strings from the middle."""
     if len(items) <= limit:
         return items
     short_list = items[: limit // 2] + items[-limit // 2 :]
@@ -51,6 +51,7 @@ RepoStats = dict[
 
 
 def repo_stats(repo: Repo) -> RepoStats:
+    """Return stats for a repo."""
     untracked_files = shorten_list(repo.untracked_files)
     head = repo.head
     try:
@@ -73,6 +74,7 @@ def repo_stats(repo: Repo) -> RepoStats:
 def repo_issues_in_stats(
     repo: Repo, *, slow: bool, include_all: bool  # noqa: ARG001
 ) -> RepoStats:
+    """Return issues in a repo."""
     stats_to_include = {
         "is_dirty",
         "untracked_files",
@@ -87,6 +89,7 @@ def repo_issues_in_stats(
 
 
 def branch_status(repo: Repo, branch: Head) -> RepoStats:
+    """Return stats for a branch."""
     tracking_branch = branch.tracking_branch()
     if tracking_branch is None:
         return {"remote_branch": False}
@@ -107,12 +110,14 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
 
 
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
+    """Return stats for all branches in a repo."""
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
 def repo_issues_in_branches(
     repo: Repo, *, slow: bool, include_all: bool  # noqa: ARG001
 ) -> RepoStats:
+    """Return issues for all branches in a repo."""
     branches_st = all_branches_status(repo)
     issues: RepoStats = {}
     issues["branches_without_remote"] = [
@@ -143,6 +148,7 @@ def repo_issues_in_branches(
 
 
 def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
+    """Return issues for all tags in a repo."""
     issues: RepoStats = {}
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if include_all:
@@ -175,6 +181,7 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoSta
 
 
 def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> RepoStats:
+    """Return issues for a repos in a folder."""
     try:
         repo = Repo(folder.resolve(), search_parent_directories=folder.is_symlink())
     except InvalidGitRepositoryError:
@@ -261,6 +268,7 @@ def issues_for_all_subfolders(
     slow: bool = False,
     include_all: bool = False,
 ) -> dict[str, RepoStats]:
+    """Return issues for all repos in a folder."""
     basedir = Path(basedir)
     # if we are in a git repo, we only check this repo:
     try:
@@ -297,6 +305,7 @@ def issues_for_all_subfolders(
 
 
 def is_file(p: Path) -> bool:
+    """Check if a path is a file."""
     try:
         return p.is_file()
     except OSError:
@@ -311,6 +320,7 @@ REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
 def format_report(
     issues: dict[str, RepoStats], *, include_ok: bool, fmt: REPORT_FORMATS_TYPE
 ) -> str:
+    """Format report to a readable output."""
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
@@ -358,6 +368,7 @@ def format_report(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI args."""
     parser = argparse.ArgumentParser(
         prog="git-folder-status", description="find all unpushed data in a directory"
     )
@@ -388,6 +399,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run git-folder-status as script."""
     args = parse_args()
     issues = issues_for_all_subfolders(
         args.DIRECTORY,
