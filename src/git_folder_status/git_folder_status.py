@@ -29,8 +29,9 @@ Requires GitPython package
 """
 
 import argparse
+import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
@@ -44,7 +45,12 @@ def shorten_list(items: list[str], limit: int = 10) -> list[str]:
     return short_list
 
 
-def repo_stats(repo: Repo) -> dict[str, Any]:
+RepoStats = dict[
+    str, "None | str | int | bool | list[str] | RepoStats | list[RepoStats]"
+]
+
+
+def repo_stats(repo: Repo) -> RepoStats:
     untracked_files = shorten_list(repo.untracked_files)
     head = repo.head
     try:
@@ -64,9 +70,7 @@ def repo_stats(repo: Repo) -> dict[str, Any]:
     }
 
 
-def repo_issues_in_stats(
-    repo: Repo, *, slow: bool, include_all: bool
-) -> dict[str, Any]:
+def repo_issues_in_stats(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
     stats_to_include = {
         "is_dirty",
         "untracked_files",
@@ -80,11 +84,12 @@ def repo_issues_in_stats(
     return issues
 
 
-def branch_status(repo: Repo, branch: Head) -> dict[str, Any]:
-    if branch.tracking_branch() is None:
+def branch_status(repo: Repo, branch: Head) -> RepoStats:
+    tracking_branch = branch.tracking_branch()
+    if tracking_branch is None:
         return {"remote_branch": False}
     local_branch = branch.name
-    remote_branch = branch.tracking_branch().name
+    remote_branch = tracking_branch.name
     if remote_branch[0] == ".":
         # tracking a local branch
         return {"remote_branch": False}
@@ -99,17 +104,15 @@ def branch_status(repo: Repo, branch: Head) -> dict[str, Any]:
     }
 
 
-def all_branches_status(repo: Repo) -> dict[str, dict[str, Any]]:
+def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     return {branch.name: branch_status(repo, branch) for branch in repo.branches}
 
 
-def repo_issues_in_branches(
-    repo: Repo, *, slow: bool, include_all: bool
-) -> dict[str, Any]:
+def repo_issues_in_branches(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
     branches_st = all_branches_status(repo)
-    issues: dict[str, Any] = {}
+    issues: RepoStats = {}
     issues["branches_without_remote"] = [
-        k for k, v in branches_st.items() if not v["remote_branch"]
+        k for k, v in branches_st.items() if not v.get("remote_branch", False)
     ]
     issues["branches_with_missing_remote"] = {
         k: v["remote_branch"]
@@ -135,30 +138,30 @@ def repo_issues_in_branches(
     return issues
 
 
-def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> dict[str, Any]:
-    issues = {}
-    local_tags = {tag.path: tag.commit.hexsha for tag in repo.tags}
+def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
+    issues: RepoStats = {}
+    local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if include_all:
-        issues["local_tags"] = local_tags
+        issues["local_tags"] = local_tags  # type: ignore[assignment]
     if "origin" not in repo.remotes:
         issues["missing_remote"] = "origin"
     elif slow:
-        remote_tags = dict(
+        remote_tags: dict[str, str] = dict(
             [
                 line.split("\t")[::-1]
                 for line in repo.git.ls_remote("--tags", "origin").splitlines()
             ]
         )
-        remote_tags2 = {
+        remote_tags2: dict[str, str] = {
             k.removesuffix("^{}"): v
             for k, v in remote_tags.items()
             if k.endswith("^{}")
         }
-        remote_tags3 = remote_tags | remote_tags2
+        remote_tags3: dict[str, str] = remote_tags | remote_tags2
         issues["tags_local_only"] = [
             tag for tag in local_tags if tag not in remote_tags3
         ]
-        issues["tags_mismatch"] = [
+        issues["tags_mismatch"] = [  # type: ignore[assignment]
             {tag: {"local": local_tags[tag], "remote": remote_tags3[tag]}}
             for tag in local_tags
             if tag in remote_tags3 and remote_tags3[tag] != local_tags[tag]
@@ -167,9 +170,7 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> dict[st
     return issues
 
 
-def issues_for_one_folder(
-    folder: Path, *, slow: bool, include_all: bool
-) -> dict[str, Any]:
+def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> RepoStats:
     try:
         repo = Repo(folder.resolve(), search_parent_directories=folder.is_symlink())
     except InvalidGitRepositoryError:
@@ -189,7 +190,12 @@ def issues_for_one_folder(
             for submodule in repo.submodules
         }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
-        return repo_st | branches_st | tags_st | submodules_st
+        assert isinstance(repo_st, dict)
+        assert isinstance(branches_st, dict)
+        assert isinstance(tags_st, dict)
+        assert isinstance(submodules_st, dict)
+        issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
+        return issues
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
 
@@ -201,9 +207,9 @@ def _issues_for_all_subfolders(
     *,
     slow: bool,
     include_all: bool,
-) -> dict[Path, dict[str, Any]]:
+) -> dict[Path, RepoStats]:
     exclude_dirs = exclude_dirs or []
-    issues: dict[Path, dict[str, Any]] = {}
+    issues: dict[Path, RepoStats] = {}
     for folder in basedir.glob("*"):
         if folder.name[0] == "." or folder.name in exclude_dirs:
             continue
@@ -249,7 +255,7 @@ def issues_for_all_subfolders(
     *,
     slow: bool = False,
     include_all: bool = False,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, RepoStats]:
     basedir = Path(basedir)
     # if we are in a git repo, we only check this repo:
     try:
@@ -257,12 +263,14 @@ def issues_for_all_subfolders(
     except InvalidGitRepositoryError:
         pass
     else:
-        basedir_working_dir = Path(repo.working_tree_dir)
-        try:
+        working_tree_dir = repo.working_tree_dir
+        assert working_tree_dir is not None
+        basedir_working_dir = Path(working_tree_dir)
+        if sys.version_info >= (3, 12):
             from_basedir = basedir_working_dir.relative_to(
                 basedir.resolve(), walk_up=True
             ).as_posix()
-        except TypeError:
+        else:
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
         return {
@@ -295,7 +303,9 @@ REPORT_FORMATS = ["yaml", "report", "json", "pprint"]
 REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
 
 
-def format_report(issues: dict, *, include_ok: bool, fmt: REPORT_FORMATS_TYPE) -> str:
+def format_report(
+    issues: dict[str, RepoStats], *, include_ok: bool, fmt: REPORT_FORMATS_TYPE
+) -> str:
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":

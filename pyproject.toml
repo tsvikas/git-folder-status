@@ -98,6 +98,7 @@ test = [
 typing = [
   "mypy ~=1.15.0",
   # add "*-stubs" and "types-*" packages here (">=0")
+  "types-pyyaml>=6.0.12.20250402",
 ]
 
 
