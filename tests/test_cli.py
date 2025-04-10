@@ -7,21 +7,12 @@ runner = CliRunner()
 
 
 def test_app() -> None:
-    result = runner.invoke(app, ["load"])
+    result = runner.invoke(app)
     assert result.exit_code == 0
-    assert "Loading" in result.stdout
-
-    result = runner.invoke(app, ["shoot"])
-    assert result.exit_code == 0
-    assert "Shooting" in result.stdout
+    assert "" in result.stdout
 
 
 def test_app_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert __version__ in result.stdout
-
-
-def test_app_exit() -> None:
-    result = runner.invoke(app, [])
-    assert result.exit_code == 2

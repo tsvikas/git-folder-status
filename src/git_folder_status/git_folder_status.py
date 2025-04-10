@@ -27,7 +27,6 @@ Run `git-folder-status -h` for help.
 Requires GitPython package
 """
 
-import argparse
 import sys
 from pathlib import Path
 from typing import Literal
@@ -365,58 +364,3 @@ def format_report(
 
         return pprint.pformat(issues, sort_dicts=False)
     raise ValueError(f"format_report got an unsupported {fmt=}")
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI args."""
-    parser = argparse.ArgumentParser(
-        prog="git-folder-status", description="find all unpushed data in a directory"
-    )
-    parser.add_argument("DIRECTORY", help="directory to check", default=".", nargs="?")
-    parser.add_argument(
-        "-r", "--recurse", type=int, default=3, help="max recurse in directories"
-    )
-    parser.add_argument(
-        "-d", "--exclude-dir", action="append", help="don't include these dirs"
-    )
-    parser.add_argument(
-        "-f",
-        "--format",
-        default="pprint",
-        choices=REPORT_FORMATS,
-        help="output format",
-    )
-    parser.add_argument(
-        "-e", "--empty", action="store_true", help="show also repos without issues"
-    )
-    parser.add_argument(
-        "-a", "--all", action="store_true", help="show other info for repos"
-    )
-    parser.add_argument(
-        "-s", "--slow", action="store_true", help="allow slow operations"
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Run git-folder-status as script."""
-    args = parse_args()
-    issues = issues_for_all_subfolders(
-        args.DIRECTORY,
-        args.recurse,
-        args.exclude_dir,
-        slow=args.slow,
-        include_all=args.all,
-    )
-    try:
-        report = format_report(issues, include_ok=args.empty, fmt=args.format)
-    except ModuleNotFoundError as e:
-        raise RuntimeError(
-            "Missing module for format. Try a different format or a newer python."
-        ) from e
-    else:
-        print(report)  # noqa: T201
-
-
-if __name__ == "__main__":
-    main()
