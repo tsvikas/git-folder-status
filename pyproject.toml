@@ -36,6 +36,7 @@ classifiers = [
 ]
 dependencies = [
   "gitpython >=0",
+  "PyYAML >=0",
   "typer >=0",
 ]
 

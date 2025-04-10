@@ -212,6 +212,7 @@ name = "git-folder-status"
 source = { editable = "." }
 dependencies = [
     { name = "gitpython" },
+    { name = "pyyaml" },
     { name = "typer" },
 ]
 
@@ -242,6 +243,7 @@ typing = [
 [package.metadata]
 requires-dist = [
     { name = "gitpython", specifier = ">=0" },
+    { name = "pyyaml", specifier = ">=0" },
     { name = "typer", specifier = ">=0" },
 ]
 

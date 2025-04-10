@@ -27,10 +27,13 @@ Run `git-folder-status -h` for help.
 Requires GitPython package
 """
 
+import json
+import pprint
 import sys
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 
@@ -323,8 +326,6 @@ def format_report(
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
-        import yaml
-
         return yaml.dump(
             issues,
             allow_unicode=True,
@@ -335,7 +336,6 @@ def format_report(
     if fmt == "report":
         if not issues:
             return ""
-        import yaml
 
         red_color = "\033[91m"
         normal_color = "\033[0m"
@@ -356,11 +356,7 @@ def format_report(
         )
         return report
     if fmt == "json":
-        import json
-
         return json.dumps(issues, indent=2)
     if fmt == "pprint":
-        import pprint
-
         return pprint.pformat(issues, sort_dicts=False)
     raise ValueError(f"format_report got an unsupported {fmt=}")
