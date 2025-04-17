@@ -15,6 +15,22 @@ Find all subdirectories with uncommitted or unpushed code.
 
 ![Screenshot](assets/screenshot.png)
 
+This script scans through a directory recursively to identify the status of
+all Git repositories found within.
+
+It returns a list of directories with their issues, including:
+
+- directories with any content that are not part of a repo.
+- uncommitted changes
+- untracked files
+- stash entries
+- detached head
+- branches without remote
+- branches with unpushed changes
+- tags without a remote tag (only with -s/--slow)
+- tags that differ from their remote tag (only with -s/--slow)
+- broken links outside repos
+
 ## Usage
 
 Install the package using pipx/uv:

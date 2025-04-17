@@ -10,19 +10,6 @@
 This script scans through a directory recursively to identify the status of
 all Git repositories found within.
 
-It returns a list of repos/submodules with their issues, including:
-* uncommitted changes
-* untracked files
-* stash entries
-* detached head
-* branches without remote
-* branches with unpushed changes
-* tags without a remote tag (only with -s/--slow)
-* tags that differ from their remote tag (only with -s/--slow)
-* directories with any content that is not part of a repo.
-* broken links outside repos
-
-
 Run `git-folder-status -h` for help.
 Requires GitPython package
 """
