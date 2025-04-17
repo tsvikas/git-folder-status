@@ -13,9 +13,7 @@
 
 Find all subdirectories with uncommitted or unpushed code.
 
-<!---
-# TODO: add example
--->
+![Screenshot](assets/screenshot.png)
 
 ## Usage
 
