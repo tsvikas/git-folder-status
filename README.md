@@ -44,11 +44,13 @@ uv tool install git+https://github.com/tsvikas/git-folder-status.git
 uv tool install git-folder-status
 -->
 
-and run it:
+and run it with:
 
 ```bash
 git-folder-status /path/to/code/directory
 ```
+
+Use `git-folder-status --help` to learn more.
 
 ## Development
 
