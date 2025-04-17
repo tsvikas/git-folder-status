@@ -36,7 +36,7 @@ It returns a list of directories with their issues, including:
 Install the package using pipx/uv:
 
 ```bash
-uv tool install git+https://github.com/tsvikas/git-folder-status.git`
+uv tool install git+https://github.com/tsvikas/git-folder-status.git
 ```
 
 <!---
