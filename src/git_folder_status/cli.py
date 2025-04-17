@@ -36,7 +36,7 @@ def git_folder_status(  # noqa: PLR0913
     ] = None,
     fmt: Annotated[
         str, typer.Option("-f", "--format", help="output format")
-    ] = "pprint",
+    ] = "report",
     empty: Annotated[
         bool, typer.Option("-e", "--empty", help="show also repos without issues")
     ] = False,
