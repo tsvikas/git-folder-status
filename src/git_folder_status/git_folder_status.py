@@ -214,11 +214,10 @@ def _issues_for_all_subfolders(
     for folder in basedir.glob("*"):
         if folder.name[0] == "." or folder.name in exclude_dirs:
             continue
-        try:
-            if not folder.is_dir():
-                continue
-        except OSError:
+        if folder.is_symlink() and not folder.resolve().exists():
             issues[folder] = {"broken_link": folder.readlink().as_posix()}
+            continue
+        if not folder.is_dir():
             continue
         summary = issues_for_one_folder(folder, slow=slow, include_all=include_all)
         if summary.get("is_git", True) or recurse <= 0:
