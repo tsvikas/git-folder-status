@@ -201,7 +201,7 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
         return issues
 
 
-def _issues_for_all_subfolders(
+def _issues_for_all_subfolders(  # noqa: C901, PLR0912
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
@@ -214,9 +214,12 @@ def _issues_for_all_subfolders(
     for folder in basedir.glob("*"):
         if folder.name[0] == "." or folder.name in exclude_dirs:
             continue
-        if folder.is_symlink() and not folder.resolve().exists():
-            issues[folder] = {"broken_link": folder.readlink().as_posix()}
-            continue
+        if folder.is_symlink():
+            if not folder.resolve().exists():
+                issues[folder] = {"broken_link": folder.readlink().as_posix()}
+                continue
+            if basedir in folder.resolve().parents:
+                continue
         if not folder.is_dir():
             continue
         summary = issues_for_one_folder(folder, slow=slow, include_all=include_all)
