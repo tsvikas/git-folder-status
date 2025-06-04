@@ -60,7 +60,7 @@ git-folder-status = "git_folder_status.cli:app"
 
 
 [tool.uv]
-required-version = "~=0.6.0"
+required-version = ">=0.5.19"
 default-groups = ["dev", "test", "typing"]
 
 

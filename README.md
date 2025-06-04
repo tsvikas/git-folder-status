@@ -31,7 +31,7 @@ It returns a list of directories with their issues, including:
 - tags that differ from their remote tag (only with -s/--slow)
 - broken links outside repos
 
-## Usage
+## Install
 
 Install the package using pipx/uv:
 
@@ -44,7 +44,9 @@ uv tool install git+https://github.com/tsvikas/git-folder-status.git
 uv tool install git-folder-status
 -->
 
-and run it with:
+## Usage
+
+Run it with:
 
 ```bash
 git-folder-status /path/to/code/directory
