@@ -33,16 +33,11 @@ It returns a list of directories with their issues, including:
 
 ## Install
 
-Install the package using pipx/uv:
+Install this tool using pipx (or uv):
 
 ```bash
-uv tool install git+https://github.com/tsvikas/git-folder-status.git
+pipx install git+https://github.com/tsvikas/git-folder-status.git
 ```
-
-<!---
-# TODO: replace with this after uploading to PyPI:
-uv tool install git-folder-status
--->
 
 ## Usage
 
