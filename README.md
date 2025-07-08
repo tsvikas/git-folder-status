@@ -73,32 +73,6 @@ Use `git-folder-status --help` to learn more.
 - Run a specific tool directly, with
   `uv run pytest`/`ruff`/`mypy`/`black`/`pre-commit`/...
 
-<!--- Badges to add after adding RTD documentation
-[![Documentation Status][rtd-badge]][rtd-link]
-
-[rtd-badge]: https://readthedocs.org/projects/git-folder-status/badge/?version=latest
-[rtd-link]: https://git-folder-status.readthedocs.io/en/latest/?badge=latest
--->
-
-<!--- Badges to add after writing tests. Also follow the link to finish setup
-[![codecov][codecov-badge]][codecov-link]
-
-[codecov-badge]: https://codecov.io/gh/tsvikas/git-folder-status/graph/badge.svg
-[codecov-link]: https://codecov.io/gh/tsvikas/git-folder-status
--->
-
-<!--- Badges to add after uploading to PyPI
-[![PyPI version][pypi-version-badge]][pypi-link]
-[![PyPI platforms][pypi-platforms-badge]][pypi-link]
-[![Total downloads][pepy-badge]][pepy-link]
-
-[pepy-badge]: https://img.shields.io/pepy/dt/git-folder-status
-[pepy-link]: https://pepy.tech/project/git-folder-status
-[pypi-link]: https://pypi.org/project/git-folder-status/
-[pypi-platforms-badge]: https://img.shields.io/pypi/pyversions/git-folder-status
-[pypi-version-badge]: https://img.shields.io/pypi/v/git-folder-status
--->
-
 [black-badge]: https://img.shields.io/badge/code%20style-black-000000.svg
 [black-link]: https://github.com/psf/black
 [github-discussions-badge]: https://img.shields.io/static/v1?label=Discussions&message=Ask&color=blue&logo=github

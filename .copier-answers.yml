@@ -1,10 +1,13 @@
 # Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
-_commit: v0.15.5
+_commit: v0.16.0
 _src_path: gh:tsvikas/python-template
 format_tool: black
 get_package_version_from_vcs: true
 github_user: tsvikas
 has_cli: true
+in_codecov: false
+in_pypi: false
+in_rtd: false
 jupyter_files: forbid
 license: MIT
 package_description: Find all subdirectories with uncommitted or unpushed code.
