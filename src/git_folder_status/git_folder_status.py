@@ -172,29 +172,32 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoSta
 def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> RepoStats:
     """Return issues for a repos in a folder."""
     try:
-        repo = Repo(folder.resolve(), search_parent_directories=folder.is_symlink())
-    except InvalidGitRepositoryError:
-        return {"is_git": False}
-    try:
-        repo_st = repo_issues_in_stats(repo, slow=slow, include_all=include_all)
-        branches_st = repo_issues_in_branches(repo, slow=slow, include_all=include_all)
-        tags_st = repo_issues_in_tags(repo, slow=slow, include_all=include_all)
-        submodules_st = {
-            f"/{submodule.path}": {
-                k: v
-                for k, v in issues_for_one_folder(
-                    Path(submodule.abspath), slow=slow, include_all=include_all
-                ).items()
-                if k not in ["is_detached_head"]
+        with Repo(
+            folder.resolve(), search_parent_directories=folder.is_symlink()
+        ) as repo:
+            repo_st = repo_issues_in_stats(repo, slow=slow, include_all=include_all)
+            branches_st = repo_issues_in_branches(
+                repo, slow=slow, include_all=include_all
+            )
+            tags_st = repo_issues_in_tags(repo, slow=slow, include_all=include_all)
+            submodules_st = {
+                f"/{submodule.path}": {
+                    k: v
+                    for k, v in issues_for_one_folder(
+                        Path(submodule.abspath), slow=slow, include_all=include_all
+                    ).items()
+                    if k not in ["is_detached_head"]
+                }
+                for submodule in repo.submodules
             }
-            for submodule in repo.submodules
-        }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
         assert isinstance(repo_st, dict)  # noqa: S101
         assert isinstance(branches_st, dict)  # noqa: S101
         assert isinstance(tags_st, dict)  # noqa: S101
         assert isinstance(submodules_st, dict)  # noqa: S101
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
+    except InvalidGitRepositoryError:
+        return {"is_git": False}
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:
@@ -263,11 +266,8 @@ def issues_for_all_subfolders(
     basedir = Path(basedir)
     # if we are in a git repo, we only check this repo:
     try:
-        repo = Repo(basedir, search_parent_directories=True)
-    except InvalidGitRepositoryError:
-        pass
-    else:
-        working_tree_dir = repo.working_tree_dir
+        with Repo(basedir, search_parent_directories=True) as repo:
+            working_tree_dir = repo.working_tree_dir
         assert working_tree_dir is not None  # noqa: S101
         basedir_working_dir = Path(working_tree_dir)
         if sys.version_info >= (3, 12):
@@ -283,6 +283,8 @@ def issues_for_all_subfolders(
                 basedir_working_dir, slow=slow, include_all=include_all
             )
         }
+    except InvalidGitRepositoryError:
+        pass
 
     # otherwise we check all subfolders:
     issues_by_path = _issues_for_all_subfolders(
