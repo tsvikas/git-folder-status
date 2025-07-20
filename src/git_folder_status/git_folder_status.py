@@ -17,6 +17,7 @@ Requires GitPython package
 import json
 import pprint
 import sys
+from collections import ChainMap
 from pathlib import Path
 from typing import Literal
 
@@ -142,21 +143,26 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoSta
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if include_all:
         issues["local_tags"] = local_tags  # type: ignore[assignment]
-    if "origin" not in repo.remotes:
-        issues["missing_remote"] = "origin"
-    elif slow:
-        remote_tags: dict[str, str] = dict(
-            [
-                line.split("\t")[::-1]
-                for line in repo.git.ls_remote("--tags", "origin").splitlines()
-            ]
+    if slow:
+        remote_tags: ChainMap[str, str] = ChainMap(
+            *(
+                dict(
+                    [
+                        line.split("\t")[::-1]
+                        for line in repo.git.ls_remote(
+                            "--tags", remote_name
+                        ).splitlines()
+                    ]
+                )
+                for remote_name in repo.remotes
+            )
         )
         remote_tags2: dict[str, str] = {
             k.removesuffix("^{}"): v
             for k, v in remote_tags.items()
             if k.endswith("^{}")
         }
-        remote_tags3: dict[str, str] = remote_tags | remote_tags2
+        remote_tags3: ChainMap[str, str] = remote_tags | remote_tags2
         issues["tags_local_only"] = [
             tag for tag in local_tags if tag not in remote_tags3
         ]
