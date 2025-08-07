@@ -101,7 +101,8 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
 
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     """Return stats for all branches in a repo."""
-    return {branch.name: branch_status(repo, branch) for branch in repo.branches}
+    branches = [b for b in repo.branches if not b.name.startswith("gitbutler/")]
+    return {branch.name: branch_status(repo, branch) for branch in branches}
 
 
 def repo_issues_in_branches(
