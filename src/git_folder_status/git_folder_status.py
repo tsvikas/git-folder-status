@@ -204,7 +204,7 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
         assert isinstance(submodules_st, dict)  # noqa: S101
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
     except InvalidGitRepositoryError:
-        return {"is_git": False}
+        return {"is_git": False} if any(folder.glob("*")) else {}
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:
