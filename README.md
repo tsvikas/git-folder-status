@@ -49,33 +49,17 @@ git-folder-status /path/to/code/directory
 
 Use `git-folder-status --help` to learn more.
 
-## Development
+## Contributing
 
-### Getting started
-
-- install [git][install-git], [uv][install-uv].
-- git clone this repo:
-  `git clone https://github.com/tsvikas/git-folder-status.git`
-  or `gh repo clone tsvikas/git-folder-status.git`
-- run `uv run just prepare`
-
-### Tests and code quality
-
-- use `uv run just format` to format the code.
-- use `uv run just lint` to see linting errors.
-- use `uv run just test` to run tests.
-- use `uv run just check` to run all the checks (format, lint, test, and pre-commit).
-- Run a specific tool directly, with
-  `uv run pytest`/`ruff`/`mypy`/`black`/`pre-commit`/...
+Interested in contributing?
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guideline.
 
 [black-badge]: https://img.shields.io/badge/code%20style-black-000000.svg
 [black-link]: https://github.com/psf/black
 [github-discussions-badge]: https://img.shields.io/static/v1?label=Discussions&message=Ask&color=blue&logo=github
 [github-discussions-link]: https://github.com/tsvikas/git-folder-status/discussions
-[install-git]: https://git-scm.com/book/en/v2/Getting-Started-Installing-Git
-[install-uv]: https://docs.astral.sh/uv/getting-started/installation/
 [prs-welcome-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg
-[prs-welcome-link]: http://makeapullrequest.com
+[prs-welcome-link]: https://opensource.guide/how-to-contribute/
 [ruff-badge]: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json
 [ruff-link]: https://github.com/astral-sh/ruff
 [template-badge]: https://img.shields.io/badge/%F0%9F%9A%80_Made_Using-tsvikas%2Fpython--template-gold
