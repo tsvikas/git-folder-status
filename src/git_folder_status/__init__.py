@@ -1,6 +1,6 @@
 """git-folder-status: Find all subdirectories with uncommitted or unpushed code.
 
-Copyright (c) 2025 Tsvika Shapira. All rights reserved.
+© 2025 Tsvika Shapira. Some rights reserved.
 """
 
 from ._version import version as _version

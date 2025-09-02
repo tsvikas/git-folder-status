@@ -10,7 +10,6 @@ description = "Find all subdirectories with uncommitted or unpushed code."
 license = "MIT"
 license-files = ["LICEN[CS]E.*"]
 readme = "README.md"
-requires-python = ">=3.10"
 authors = [
   {name = "Tsvika Shapira", email = "tsvikas@gmail.com"}
 ]
@@ -34,6 +33,15 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Typing :: Typed",
 ]
+# urls.homepage = "https://git-folder-status.readthedocs.io"
+urls.source = "https://github.com/tsvikas/git-folder-status"
+urls.changelog = "https://github.com/tsvikas/git-folder-status/blob/main/CHANGELOG.md"
+# urls.releasenotes = "https://github.com/tsvikas/git-folder-status/releases"
+# urls.documentation = "https://git-folder-status.readthedocs.io"
+urls.issues = "https://github.com/tsvikas/git-folder-status/issues"
+# urls.funding = "https://github.com/sponsors/tsvikas"
+
+requires-python = ">=3.10"
 dependencies = [
   "gitpython >=3.1",
   "PyYAML >=0",
@@ -42,15 +50,6 @@ dependencies = [
 
 [project.optional-dependencies]
 # optional_name = ["some_package >=1.0"]
-
-[project.urls]
-# homepage = "https://git-folder-status.readthedocs.io"
-source = "https://github.com/tsvikas/git-folder-status"
-changelog = "https://github.com/tsvikas/git-folder-status/blob/main/CHANGELOG.md"
-# releasenotes = "https://github.com/tsvikas/git-folder-status/releases"
-# documentation = "https://git-folder-status.readthedocs.io"
-issues = "https://github.com/tsvikas/git-folder-status/issues"
-# funding = "https://github.com/sponsors/tsvikas"
 
 [project.scripts]
 git-folder-status = "git_folder_status.cli:app"
@@ -96,7 +95,14 @@ test = [
   "pytest-mock ~=3.3",
   # "pytest-regressions ~=2.0",
 ]
-# docs = []
+docs = [
+  "mkdocs ~=1.0",
+  "mkdocs-material ~=9.0",
+  "mkdocstrings-python ~=1.0",
+  "mkdocs-gen-files ~=0.5.0",
+  "mkdocs-literate-nav ~=0.6.0",
+  "mkdocs-section-index ~=0.3.0",
+]
 typing = [
   "mypy ~=1.17.0",
   # add "*-stubs" and "types-*" packages here (">=0")
@@ -111,6 +117,10 @@ build.hooks.vcs.version-file = "src/git_folder_status/_version.py"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
+testpaths = [
+  "src/",
+  "tests/",
+]
 addopts = [
   ## testing
   "--doctest-modules",
