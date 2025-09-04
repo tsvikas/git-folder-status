@@ -5,7 +5,7 @@ format_tool: black
 get_package_version_from_vcs: true
 github_user: tsvikas
 has_cli: true
-in_codecov: false
+in_codecov: true
 in_pypi: false
 in_rtd: false
 jupyter_files: forbid
