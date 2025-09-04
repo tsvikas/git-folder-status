@@ -1,7 +1,6 @@
 """Tests for git_folder_status module."""
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
@@ -284,24 +283,18 @@ class TestRepoIssuesInTags:
 class TestIssuesForOneFolder:
     """Test issues_for_one_folder function."""
 
-    def test_invalid_git_repository(self) -> None:
+    def test_invalid_git_repository(self, tmp_path: Path) -> None:
         """Test handling of non-git directory."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            folder = Path(temp_dir)
+        # Create some files to make it non-empty
+        (tmp_path / "file.txt").write_text("content")
 
-            # Create some files to make it non-empty
-            (folder / "file.txt").write_text("content")
+        result = issues_for_one_folder(tmp_path, slow=False, include_all=False)
+        assert result == {"is_git": False}
 
-            result = issues_for_one_folder(folder, slow=False, include_all=False)
-            assert result == {"is_git": False}
-
-    def test_empty_non_git_directory(self) -> None:
+    def test_empty_non_git_directory(self, tmp_path: Path) -> None:
         """Test handling of empty non-git directory."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            folder = Path(temp_dir)
-
-            result = issues_for_one_folder(folder, slow=False, include_all=False)
-            assert result == {}
+        result = issues_for_one_folder(tmp_path, slow=False, include_all=False)
+        assert result == {}
 
     def test_repository_error_handling(self) -> None:
         """Test error handling for repository analysis."""
@@ -314,26 +307,23 @@ class TestIssuesForOneFolder:
 class TestIsFile:
     """Test is_file function."""
 
-    def test_normal_file(self) -> None:
+    def test_normal_file(self, tmp_path: Path) -> None:
         """Test normal file detection."""
-        with tempfile.NamedTemporaryFile() as temp_file:
-            path = Path(temp_file.name)
-            assert is_file(path) is True
+        test_file = tmp_path / "test_file.txt"
+        test_file.write_text("content")
+        assert is_file(test_file) is True
 
-    def test_directory(self) -> None:
+    def test_directory(self, tmp_path: Path) -> None:
         """Test directory is not a file."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir)
-            assert is_file(path) is False
+        assert is_file(tmp_path) is False
 
-    def test_broken_symlink(self) -> None:
+    def test_broken_symlink(self, tmp_path: Path) -> None:
         """Test broken symlink handling."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            link_path = Path(temp_dir) / "broken_link"
-            link_path.symlink_to("nonexistent_target")
+        link_path = tmp_path / "broken_link"
+        link_path.symlink_to("nonexistent_target")
 
-            # Should return False for broken symlinks without raising
-            assert is_file(link_path) is False
+        # Should return False for broken symlinks without raising
+        assert is_file(link_path) is False
 
 
 class TestFormatReport:
@@ -390,148 +380,130 @@ class TestFormatReport:
 class TestIssuesForAllSubfolders:
     """Test issues_for_all_subfolders function."""
 
-    def test_exclude_dirs(self) -> None:
+    def test_exclude_dirs(self, tmp_path: Path) -> None:
         """Test directory exclusion."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            basedir = Path(temp_dir)
+        # Create directories
+        (tmp_path / "included").mkdir()
+        (tmp_path / "excluded").mkdir()
+        (tmp_path / ".hidden").mkdir()
 
-            # Create directories
-            (basedir / "included").mkdir()
-            (basedir / "excluded").mkdir()
-            (basedir / ".hidden").mkdir()
+        # Add files to make them detectable
+        (tmp_path / "included" / "file.txt").write_text("content")
+        (tmp_path / "excluded" / "file.txt").write_text("content")
 
-            # Add files to make them detectable
-            (basedir / "included" / "file.txt").write_text("content")
-            (basedir / "excluded" / "file.txt").write_text("content")
+        result = issues_for_all_subfolders(
+            tmp_path,
+            recurse=1,
+            exclude_dirs=["excluded"],
+            slow=False,
+            include_all=False,
+        )
 
-            result = issues_for_all_subfolders(
-                basedir,
-                recurse=1,
-                exclude_dirs=["excluded"],
-                slow=False,
-                include_all=False,
-            )
+        assert "included" in result
+        assert "excluded" not in result
+        assert ".hidden" not in result
 
-            assert "included" in result
-            assert "excluded" not in result
-            assert ".hidden" not in result
-
-    def test_broken_symlink_handling(self) -> None:
+    def test_broken_symlink_handling(self, tmp_path: Path) -> None:
         """Test handling of broken symlinks."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            basedir = Path(temp_dir)
+        # Create broken symlink
+        broken_link = tmp_path / "broken_link"
+        broken_link.symlink_to("nonexistent_target")
 
-            # Create broken symlink
-            broken_link = basedir / "broken_link"
-            broken_link.symlink_to("nonexistent_target")
+        result = issues_for_all_subfolders(
+            tmp_path, recurse=1, slow=False, include_all=False
+        )
 
-            result = issues_for_all_subfolders(
-                basedir, recurse=1, slow=False, include_all=False
-            )
+        assert "broken_link" in result
+        assert result["broken_link"]["broken_link"] == "nonexistent_target"
 
-            assert "broken_link" in result
-            assert result["broken_link"]["broken_link"] == "nonexistent_target"
-
-    def test_recursive_symlink_avoidance(self) -> None:
+    def test_recursive_symlink_avoidance(self, tmp_path: Path) -> None:
         """Test avoidance of recursive symlinks."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            basedir = Path(temp_dir)
+        # Create subdirectory and symlink back to parent
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        recursive_link = subdir / "parent_link"
+        recursive_link.symlink_to(tmp_path)
 
-            # Create subdirectory and symlink back to parent
-            subdir = basedir / "subdir"
-            subdir.mkdir()
-            recursive_link = subdir / "parent_link"
-            recursive_link.symlink_to(basedir)
+        result = issues_for_all_subfolders(
+            tmp_path, recurse=2, slow=False, include_all=False
+        )
 
-            result = issues_for_all_subfolders(
-                basedir, recurse=2, slow=False, include_all=False
-            )
-
-            # Should not include the recursive symlink
-            assert "subdir" in result
-            # The recursive link should be skipped, not cause infinite recursion
+        # Should not include the recursive symlink
+        assert "subdir" in result
+        # The recursive link should be skipped, not cause infinite recursion
 
     @patch("sys.version_info", (3, 11, 0))
-    def test_python_version_fallback(self) -> None:
+    def test_python_version_fallback(self, tmp_path: Path) -> None:
         """Test fallback for Python < 3.12."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            basedir = Path(temp_dir)
+        # Create a git repo in temp dir
+        with patch("git_folder_status.git_folder_status.Repo") as mock_repo_class:
+            mock_repo = Mock()
+            mock_repo.working_tree_dir = str(tmp_path)
+            mock_repo_class.return_value.__enter__.return_value = mock_repo
 
-            # Create a git repo in temp dir
-            with patch("git_folder_status.git_folder_status.Repo") as mock_repo_class:
-                mock_repo = Mock()
-                mock_repo.working_tree_dir = str(basedir)
-                mock_repo_class.return_value.__enter__.return_value = mock_repo
+            with patch(
+                "git_folder_status.git_folder_status.issues_for_one_folder"
+            ) as mock_issues:
+                mock_issues.return_value = {"is_dirty": True}
 
-                with patch(
-                    "git_folder_status.git_folder_status.issues_for_one_folder"
-                ) as mock_issues:
-                    mock_issues.return_value = {"is_dirty": True}
+                result = issues_for_all_subfolders(
+                    tmp_path, recurse=1, slow=False, include_all=False
+                )
 
-                    result = issues_for_all_subfolders(
-                        basedir, recurse=1, slow=False, include_all=False
-                    )
+                assert "<this repos>" in result
 
-                    assert "<this repos>" in result
-
-    def test_non_git_directory_with_files_and_symlinks(self) -> None:
+    def test_non_git_directory_with_files_and_symlinks(self, tmp_path: Path) -> None:
         """Test handling of non-git directory with files and symlinks."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            basedir = Path(temp_dir)
+        # Create subdirectory with git repos and non-git content
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
 
-            # Create subdirectory with git repos and non-git content
-            subdir = basedir / "subdir"
-            subdir.mkdir()
+        # Create a git repo inside
+        git_subdir = subdir / "git_repo"
+        git_subdir.mkdir()
+        (git_subdir / ".git").mkdir()
 
-            # Create a git repo inside
-            git_subdir = subdir / "git_repo"
-            git_subdir.mkdir()
-            (git_subdir / ".git").mkdir()
+        # Create regular files and symlinks in the parent
+        (subdir / "regular_file.txt").write_text("content")
+        (subdir / "symlink").symlink_to("regular_file.txt")
 
-            # Create regular files and symlinks in the parent
-            (subdir / "regular_file.txt").write_text("content")
-            (subdir / "symlink").symlink_to("regular_file.txt")
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder"
+        ) as mock_issues:
 
-            with patch(
-                "git_folder_status.git_folder_status.issues_for_one_folder"
-            ) as mock_issues:
+            def side_effect(folder: Path, **_kwargs: bool) -> RepoStats:
+                if folder.name == "git_repo":
+                    return {"is_dirty": True}
+                return {"is_git": False}
 
-                def side_effect(folder: Path, **_kwargs: bool) -> RepoStats:
-                    if folder.name == "git_repo":
-                        return {"is_dirty": True}
-                    return {"is_git": False}
+            mock_issues.side_effect = side_effect
 
-                mock_issues.side_effect = side_effect
+            result = issues_for_all_subfolders(
+                tmp_path, recurse=2, slow=False, include_all=False
+            )
 
-                result = issues_for_all_subfolders(
-                    basedir, recurse=2, slow=False, include_all=False
-                )
+            # Should include both the git repo and note the non-git parent
+            assert any("git_repo" in str(k) for k in result)
+            assert "subdir" in result
+            assert result["subdir"]["is_git"] is False
+            assert "untracked_files" in result["subdir"]
+            assert "sym_links" in result["subdir"]
 
-                # Should include both the git repo and note the non-git parent
-                assert any("git_repo" in str(k) for k in result)
-                assert "subdir" in result
-                assert result["subdir"]["is_git"] is False
-                assert "untracked_files" in result["subdir"]
-                assert "sym_links" in result["subdir"]
-
-    def test_directory_with_only_empty_subdirs(self) -> None:
+    def test_directory_with_only_empty_subdirs(self, tmp_path: Path) -> None:
         """Test directory with only empty subdirectories."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            basedir = Path(temp_dir)
+        # Create empty subdirectory
+        empty_subdir = tmp_path / "empty_subdir"
+        empty_subdir.mkdir()
 
-            # Create empty subdirectory
-            empty_subdir = basedir / "empty_subdir"
-            empty_subdir.mkdir()
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder"
+        ) as mock_issues:
+            mock_issues.return_value = {"is_git": False}
 
-            with patch(
-                "git_folder_status.git_folder_status.issues_for_one_folder"
-            ) as mock_issues:
-                mock_issues.return_value = {"is_git": False}
+            result = issues_for_all_subfolders(
+                tmp_path, recurse=1, slow=False, include_all=False
+            )
 
-                result = issues_for_all_subfolders(
-                    basedir, recurse=1, slow=False, include_all=False
-                )
-
-                # Should mark the empty directory as not git
-                assert "empty_subdir" in result
-                assert result["empty_subdir"]["is_git"] is False
+            # Should mark the empty directory as not git
+            assert "empty_subdir" in result
+            assert result["empty_subdir"]["is_git"] is False
