@@ -43,6 +43,7 @@ urls.issues = "https://github.com/tsvikas/git-folder-status/issues"
 
 requires-python = ">=3.10"
 dependencies = [
+  "colorama >=0.4.6",
   "gitpython >=3.1",
   "PyYAML >=0",
   "typer >=0.16",
@@ -107,6 +108,7 @@ typing = [
   "mypy ~=1.17.0",
   # add "*-stubs" and "types-*" packages here (">=0")
   "types-pyyaml>=6.0.12.20250402",
+  "types-colorama >=0",
 ]
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
+from colorama import Fore
 from git import Repo
 
 from git_folder_status.git_folder_status import (
@@ -359,8 +360,8 @@ class TestFormatReport:
         """Test report format with colored output."""
         issues: dict[str, RepoStats] = {"repo1": {"is_dirty": True}}
         result = format_report(issues, include_ok=True, fmt="report")
-        assert "\033[91m" in result  # Red color code
-        assert "\033[0m" in result  # Normal color code
+        assert Fore.LIGHTRED_EX in result
+        assert Fore.RESET in result
 
     def test_include_ok_false(self) -> None:
         """Test include_ok=False filters empty issues."""

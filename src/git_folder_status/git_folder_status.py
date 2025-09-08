@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+from colorama import Fore
 from git import InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 
@@ -336,8 +337,6 @@ def format_report(
         if not issues:
             return ""
 
-        red_color = "\033[91m"
-        normal_color = "\033[0m"
         report_lines = yaml.dump(
             issues,
             allow_unicode=True,
@@ -347,7 +346,7 @@ def format_report(
         ).splitlines()
         report = "\n".join(
             (
-                red_color + line + normal_color
+                Fore.LIGHTRED_EX + line + Fore.RESET
                 if line and line[0] != " " and line[-2:] != "{}"
                 else line
             )
