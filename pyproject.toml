@@ -107,7 +107,7 @@ docs = [
 typing = [
   "mypy ~=1.17.0",
   # add "*-stubs" and "types-*" packages here (">=0")
-  "types-pyyaml>=6.0.12.20250402",
+  "types-pyyaml >=0",
   "types-colorama >=0",
 ]
 

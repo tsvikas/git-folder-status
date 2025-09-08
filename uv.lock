@@ -427,7 +427,7 @@ test = [
 typing = [
     { name = "mypy", specifier = "~=1.17.0" },
     { name = "types-colorama", specifier = ">=0" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20250402" },
+    { name = "types-pyyaml", specifier = ">=0" },
 ]
 
 [[package]]
