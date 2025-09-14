@@ -347,6 +347,7 @@ wheels = [
 name = "git-folder-status"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "colorama" },
     { name = "gitpython" },
     { name = "pyyaml" },
@@ -390,6 +391,7 @@ typing = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=0" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "gitpython", specifier = ">=3.1" },
     { name = "pyyaml", specifier = ">=0" },
