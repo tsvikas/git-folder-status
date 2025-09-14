@@ -43,10 +43,18 @@ urls.issues = "https://github.com/tsvikas/git-folder-status/issues"
 
 requires-python = ">=3.10"
 dependencies = [
+<<<<<<< before updating
   "colorama >=0.4.6",
   "gitpython >=3.1",
   "PyYAML >=0",
   "typer >=0.16",
+||||||| last update
+  "loguru >=0",
+  "typer >=0.13",
+=======
+  "typer >=0.16",
+  "click >=0",
+>>>>>>> after updating
 ]
 
 [project.optional-dependencies]
@@ -92,6 +100,12 @@ test = [
   # "freezegun ~=1.0",
   # "hypothesis ~=6.0",
   # "pytest-datadir ~=1.0",
+<<<<<<< before updating
+  # "pytest-loguru >=0",
+||||||| last update
+  "pytest-loguru >=0",
+=======
+>>>>>>> after updating
   "pytest-mock ~=3.3",
   # "pytest-regressions ~=2.0",
 ]
