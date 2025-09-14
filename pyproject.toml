@@ -47,6 +47,7 @@ dependencies = [
   "gitpython >=3.1",
   "PyYAML >=0",
   "typer >=0.16",
+  "click >=0",
 ]
 
 [project.optional-dependencies]
