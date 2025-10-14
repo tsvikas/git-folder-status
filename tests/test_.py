@@ -1,4 +1,4 @@
-import importlib
+import importlib.metadata
 
 import git_folder_status
 
