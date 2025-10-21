@@ -1,37 +1,37 @@
 from unittest.mock import patch
 
-from typer.testing import CliRunner
+import pytest
 
 from git_folder_status import __version__
 from git_folder_status.cli import app
 
-runner = CliRunner()
+
+def test_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        app("--version")
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == __version__
 
 
 def test_app() -> None:
-    result = runner.invoke(app)
-    assert result.exit_code == 0
-    assert "" in result.stdout
-
-
-def test_app_version() -> None:
-    result = runner.invoke(app, ["--version"])
-    assert result.exit_code == 0
-    assert __version__ in result.stdout
+    with pytest.raises(SystemExit) as exc_info:
+        app([])
+    assert exc_info.value.code == 0
+    # TODO: better test, use temp folder
 
 
 def test_invalid_format() -> None:
     """Test invalid format raises error."""
-    result = runner.invoke(app, ["--format", "invalid"])
-    assert result.exit_code != 0
-    # The error is caught by Typer and results in SystemExit
-    assert isinstance(result.exception, SystemExit)
+    with pytest.raises(SystemExit) as exc_info:
+        app(["--format", "invalid"])
+    assert exc_info.value.code != 0
 
 
-def test_module_not_found_error() -> None:
+def test_module_not_found_error(capsys: pytest.CaptureFixture[str]) -> None:
     """Test ModuleNotFoundError handling."""
     with patch("git_folder_status.cli.format_report") as mock_format:
         mock_format.side_effect = ModuleNotFoundError("test module not found")
-        result = runner.invoke(app, [])
-        assert result.exit_code != 0
-        assert "Missing module for format" in str(result.exception)
+        with pytest.raises(SystemExit) as exc_info:
+            app([])
+    assert exc_info.value.code != 0
+    assert "Missing module for format" in str(capsys.readouterr().err)

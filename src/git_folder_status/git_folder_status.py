@@ -315,7 +315,6 @@ def is_file(p: Path) -> bool:
         return False
 
 
-REPORT_FORMATS = ["yaml", "report", "json", "pprint"]
 REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
 
 

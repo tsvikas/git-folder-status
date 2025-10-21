@@ -47,8 +47,7 @@ dependencies = [
   "colorama >=0.4.6",
   "gitpython >=3.1",
   "PyYAML >=0",
-  "typer >=0.16",
-  "click >=0",
+  "cyclopts >=4",
 ]
 
 [project.optional-dependencies]
@@ -225,7 +224,7 @@ ignore = [
   # ban something useful for a possibly good reason
   #"C901",     # mccabe/complex-structure
   #"S101",     # flake8-bandit/assert
-  #"FIX00",    # flake8-fixme/line-contains-*
+  "FIX00",    # flake8-fixme/line-contains-*
   #"ERA001",   # eradicate/commented-out-code
   #"PLR091",   # PyLint-Refactor/too-many-*
   "TRY003",   # tryceratops/raise-vanilla-args

@@ -1,63 +1,52 @@
 """CLI for git_folder_status."""
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
-import typer
-from click.exceptions import UsageError
+from cyclopts import App, Parameter
 
-from . import __version__
 from .git_folder_status import (
-    REPORT_FORMATS,
     REPORT_FORMATS_TYPE,
     format_report,
     issues_for_all_subfolders,
 )
 
-app = typer.Typer()
+app = App(name="git-folder-status")
+app.register_install_completion_command()
 
 
-def _version_callback(value: bool) -> None:  # noqa: FBT001
-    if value:
-        print(f"git-folder-status {__version__}")
-        raise typer.Exit(0)
-
-
-@app.command()
+@app.default()
 def git_folder_status(  # noqa: PLR0913
-    directory: Annotated[Path, typer.Argument(help="directory to check")] = Path(),
+    directory: Path = Path(),
+    /,
     *,
-    recurse: Annotated[
-        int, typer.Option("-r", "--recurse", help="max recurse in directories")
-    ] = 3,
-    exclude_dir: Annotated[
-        list[str] | None,
-        typer.Option("-d", "--exclude-dir", help="don't include these dirs"),
-    ] = None,
-    fmt: Annotated[
-        str, typer.Option("-f", "--format", help="output format")
-    ] = "report",
-    empty: Annotated[
-        bool, typer.Option("-e", "--empty", help="show also repos without issues")
-    ] = False,
-    include_all: Annotated[
-        bool, typer.Option("-a", "--all", help="show other info for repos")
-    ] = False,
-    slow: Annotated[
-        bool, typer.Option("-s", "--slow", help="allow slow operations")
-    ] = False,
-    version: Annotated[  # noqa: ARG001
-        bool | None,
-        typer.Option(
-            "--version",
-            "-V",
-            callback=_version_callback,
-            is_eager=True,
-            help="Print version",
-        ),
-    ] = None,
+    recurse: Annotated[int, Parameter(alias="-r")] = 3,
+    exclude_dir: Annotated[list[str] | None, Parameter(alias="-d")] = None,
+    fmt: Annotated[REPORT_FORMATS_TYPE, Parameter(name=["-f", "--format"])] = "report",
+    empty: Annotated[bool, Parameter(alias="-e")] = False,
+    include_all: Annotated[bool, Parameter(name=["-a", "--all"])] = False,
+    slow: Annotated[bool, Parameter(alias="-s")] = False,
 ) -> int:
-    """Find all unsaved data in a directory."""
+    """Find all unsaved data in a directory.
+
+    Parameters
+    ----------
+    directory
+        directory to check
+    recurse
+        max recurse in directories
+    exclude_dir
+        don't include these dirs
+    fmt
+        output format
+    empty
+        show also repos without issues
+    include_all
+        show other info for repos
+    slow
+        allow slow operations
+    """
     issues = issues_for_all_subfolders(
         directory,
         recurse,
@@ -65,15 +54,14 @@ def git_folder_status(  # noqa: PLR0913
         slow=slow,
         include_all=include_all,
     )
-    if fmt not in REPORT_FORMATS:
-        raise UsageError(f"format must be one of {REPORT_FORMATS}")
-    fmt_report: REPORT_FORMATS_TYPE = fmt  # type: ignore[assignment]
     try:
-        report = format_report(issues, include_ok=empty, fmt=fmt_report)
+        report = format_report(issues, include_ok=empty, fmt=fmt)
     except ModuleNotFoundError as e:
-        raise RuntimeError(
-            "Missing module for format. Try a different format or a newer python."
-        ) from e
+        print(
+            "Missing module for format. Try a different format or a newer python.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from e
     else:
         print(report)
     return 0
