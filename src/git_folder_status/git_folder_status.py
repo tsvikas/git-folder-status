@@ -325,35 +325,51 @@ def format_report(
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
     if fmt == "yaml":
-        return yaml.dump(
-            issues,
-            allow_unicode=True,
-            default_flow_style=False,
-            indent=2,
-            sort_keys=False,
-        )
+        return _format_yaml(issues)
     if fmt == "report":
-        if not issues:
-            return ""
-
-        report_lines = yaml.dump(
-            issues,
-            allow_unicode=True,
-            default_flow_style=False,
-            indent=2,
-            sort_keys=False,
-        ).splitlines()
-        report = "\n".join(
-            (
-                Fore.LIGHTRED_EX + line + Fore.RESET
-                if line and line[0] != " " and line[-2:] != "{}"
-                else line
-            )
-            for line in report_lines
-        )
-        return report
+        return _format_report(issues)
     if fmt == "json":
-        return json.dumps(issues, indent=2)
+        return _format_json(issues)
     if fmt == "pprint":
-        return pprint.pformat(issues, sort_dicts=False)
+        return _format_pprint(issues)
     raise ValueError(f"format_report got an unsupported {fmt=}")
+
+
+def _format_yaml(issues: dict[str, RepoStats]) -> str:
+    return yaml.dump(
+        issues,
+        allow_unicode=True,
+        default_flow_style=False,
+        indent=2,
+        sort_keys=False,
+    )
+
+
+def _format_report(issues: dict[str, RepoStats]) -> str:
+    if not issues:
+        return ""
+
+    report_lines = yaml.dump(
+        issues,
+        allow_unicode=True,
+        default_flow_style=False,
+        indent=2,
+        sort_keys=False,
+    ).splitlines()
+    report = "\n".join(
+        (
+            Fore.LIGHTRED_EX + line + Fore.RESET
+            if line and line[0] != " " and line[-2:] != "{}"
+            else line
+        )
+        for line in report_lines
+    )
+    return report
+
+
+def _format_json(issues: dict[str, RepoStats]) -> str:
+    return json.dumps(issues, indent=2)
+
+
+def _format_pprint(issues: dict[str, RepoStats]) -> str:
+    return pprint.pformat(issues, sort_dicts=False)
