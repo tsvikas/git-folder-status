@@ -324,15 +324,15 @@ def format_report(
     """Format report to a readable output."""
     if not include_ok:
         issues = {k: v for k, v in issues.items() if v}
-    if fmt == "yaml":
-        return _format_yaml(issues)
-    if fmt == "report":
-        return _format_report(issues)
-    if fmt == "json":
-        return _format_json(issues)
-    if fmt == "pprint":
-        return _format_pprint(issues)
-    raise ValueError(f"format_report got an unsupported {fmt=}")
+    try:
+        return {
+            "yaml": _format_yaml,
+            "report": _format_report,
+            "json": _format_json,
+            "pprint": _format_pprint,
+        }[fmt](issues)
+    except KeyError as e:
+        raise ValueError(f"format_report got an unsupported {fmt=}") from e
 
 
 def _format_yaml(issues: dict[str, RepoStats]) -> str:
