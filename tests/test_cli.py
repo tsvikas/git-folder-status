@@ -17,7 +17,7 @@ def test_app() -> None:
     with pytest.raises(SystemExit) as exc_info:
         app([])
     assert exc_info.value.code == 0
-    # TODO: better test, use temp folder
+    # TODO: convert to better tests -- test in a temp folder
 
 
 def test_invalid_format() -> None:
