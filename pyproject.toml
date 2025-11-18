@@ -150,6 +150,7 @@ filterwarnings = [
   "default::DeprecationWarning",
   "error::DeprecationWarning:git_folder_status",
 ]
+log_level = "INFO"
 
 
 [tool.coverage]
