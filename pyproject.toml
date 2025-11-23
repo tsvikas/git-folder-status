@@ -34,13 +34,14 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
-# urls.homepage = "https://git-folder-status.readthedocs.io"
-urls.source = "https://github.com/tsvikas/git-folder-status"
-urls.changelog = "https://github.com/tsvikas/git-folder-status/blob/main/CHANGELOG.md"
-# urls.releasenotes = "https://github.com/tsvikas/git-folder-status/releases"
-# urls.documentation = "https://git-folder-status.readthedocs.io"
-urls.issues = "https://github.com/tsvikas/git-folder-status/issues"
-# urls.funding = "https://github.com/sponsors/tsvikas"
+# urls.Homepage = "https://git-folder-status.readthedocs.io"
+urls.Source = "https://github.com/tsvikas/git-folder-status"
+urls.Changelog = "https://github.com/tsvikas/git-folder-status/blob/main/CHANGELOG.md"
+# urls.ReleaseNotes = "https://github.com/tsvikas/git-folder-status/releases"
+# urls.Documentation = "https://git-folder-status.readthedocs.io"
+urls.Issues = "https://github.com/tsvikas/git-folder-status/issues"
+# urls.Funding = "https://github.com/sponsors/tsvikas"
+# Discussions = "https://github.com/tsvikas/git-folder-status/discussions"
 
 requires-python = ">=3.10"
 dependencies = [
@@ -58,11 +59,6 @@ git-folder-status = "git_folder_status.cli:app"
 
 [project.gui-scripts]
 # git-folder-status = "git_folder_status.gui:app.run"
-
-
-[tool.uv]
-required-version = ">=0.7.3"
-default-groups = ["dev", "test", "typing"]
 
 
 [dependency-groups]
@@ -110,6 +106,11 @@ typing = [
   "types-pyyaml >=0",
   "types-colorama >=0",
 ]
+
+
+[tool.uv]
+required-version = ">=0.7.3"
+default-groups = ["dev", "test", "typing"]
 
 
 [tool.hatch]

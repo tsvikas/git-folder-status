@@ -1,5 +1,10 @@
 site_name: git-folder-status
+site_url: 'https://git-folder-status.readthedocs.io/'
+site_author: Tsvika Shapira
 site_description: Find all subdirectories with uncommitted or unpushed code.
+
+repo_name: 'tsvikas/git-folder-status'
+repo_url: 'https://github.com/tsvikas/git-folder-status'
 
 theme:
   name: material
