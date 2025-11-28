@@ -8,10 +8,12 @@ import pytest
 from colorama import Fore
 from git import Repo
 
+from git_folder_status.format import (
+    format_report,
+)
 from git_folder_status.git_folder_status import (
     RepoStats,
     branch_status,
-    format_report,
     is_file,
     issues_for_all_subfolders,
     issues_for_one_folder,

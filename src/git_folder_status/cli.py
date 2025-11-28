@@ -1,4 +1,7 @@
-"""CLI for git_folder_status."""
+"""CLI for git_folder_status.
+
+Run `git-folder-status -h` for help.
+"""
 
 import sys
 from pathlib import Path
@@ -6,9 +9,11 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 
-from .git_folder_status import (
+from .format import (
     REPORT_FORMATS_TYPE,
     format_report,
+)
+from .git_folder_status import (
     issues_for_all_subfolders,
 )
 
