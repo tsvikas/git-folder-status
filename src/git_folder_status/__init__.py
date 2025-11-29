@@ -4,6 +4,19 @@
 """
 
 from ._version import version as _version
+from .format import (
+    REPORT_FORMATS_TYPE,
+    format_report,
+)
+from .git_folder_status import (
+    RepoStats,
+    issues_for_all_subfolders,
+)
 
 __version__ = _version
-__all__: list[str] = []
+__all__: list[str] = [
+    "REPORT_FORMATS_TYPE",
+    "RepoStats",
+    "format_report",
+    "issues_for_all_subfolders",
+]

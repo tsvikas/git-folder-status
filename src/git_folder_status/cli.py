@@ -9,11 +9,9 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 
-from .format import (
+from . import (
     REPORT_FORMATS_TYPE,
     format_report,
-)
-from .git_folder_status import (
     issues_for_all_subfolders,
 )
 
