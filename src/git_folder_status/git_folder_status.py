@@ -199,7 +199,7 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
         return issues
 
 
-def _issues_for_all_subfolders(  # noqa: C901, PLR0912
+def _issues_for_all_subfolders(
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
@@ -229,21 +229,10 @@ def _issues_for_all_subfolders(  # noqa: C901, PLR0912
             )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
                 issues.update(subfolder_summary)
-                sym_links = [p.name for p in folder.glob("*") if p.is_symlink()]
-                untracked_files = [
-                    p.name
-                    for p in folder.glob("*")
-                    if p.is_file() and not p.is_symlink()
-                ]
-                if untracked_files or sym_links:
+                untracked_files = [p.name for p in folder.glob("*") if p.is_file()]
+                if untracked_files:
                     issues[folder] = {"is_git": False}
-                    if untracked_files:
-                        issues[folder]["untracked_files"] = shorten_list(
-                            untracked_files
-                        )
-                    if sym_links:
-                        issues[folder]["sym_links"] = shorten_list(sym_links)
-
+                    issues[folder]["untracked_files"] = shorten_list(untracked_files)
             else:
                 issues[folder] = {"is_git": False}
     return issues

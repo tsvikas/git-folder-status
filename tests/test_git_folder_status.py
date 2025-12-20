@@ -434,7 +434,6 @@ class TestIssuesForAllSubfolders:
             assert "subdir" in result
             assert result["subdir"]["is_git"] is False
             assert "untracked_files" in result["subdir"]
-            assert "sym_links" in result["subdir"]
 
     def test_directory_with_only_empty_subdirs(self, tmp_path: Path) -> None:
         """Test directory with only empty subdirectories."""
