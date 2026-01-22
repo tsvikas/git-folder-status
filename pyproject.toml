@@ -102,6 +102,7 @@ docs = [
 ]
 typing = [
   "mypy ~=1.19.0",
+  "ty ~=0.0",
   # add "*-stubs" and "types-*" packages here (">=0")
   "types-pyyaml >=0",
   "types-colorama >=0",
@@ -158,6 +159,13 @@ log_level = "INFO"
 run.omit = [
   "src/git_folder_status/__main__.py",
   "src/git_folder_status/_version.py",
+]
+
+
+[tool.ty]
+src.include = [
+    "src",
+    "tests",
 ]
 
 
