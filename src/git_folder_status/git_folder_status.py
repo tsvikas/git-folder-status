@@ -50,7 +50,10 @@ def repo_stats(repo: Repo) -> RepoStats:
 
 
 def repo_issues_in_stats(
-    repo: Repo, *, slow: bool, include_all: bool  # noqa: ARG001
+    repo: Repo,
+    *,
+    slow: bool,  # noqa: ARG001
+    include_all: bool,
 ) -> RepoStats:
     """Return issues in a repo."""
     stats_to_include = {
@@ -94,7 +97,10 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
 
 
 def repo_issues_in_branches(
-    repo: Repo, *, slow: bool, include_all: bool  # noqa: ARG001
+    repo: Repo,
+    *,
+    slow: bool,  # noqa: ARG001
+    include_all: bool,
 ) -> RepoStats:
     """Return issues for all branches in a repo."""
     branches_st = all_branches_status(repo)
@@ -164,6 +170,29 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoSta
     return issues
 
 
+def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
+    """Filter issues that aren't relevant for submodules.
+
+    Submodules are pinned to specific commits, so being "behind" the remote
+    is expected. We only care about branches that are ahead (unpushed commits).
+    """
+    filtered = {k: v for k, v in issues.items() if k != "is_detached_head"}
+    if "branches_out_of_sync" in filtered:
+        branches = filtered["branches_out_of_sync"]
+        assert isinstance(branches, dict)  # noqa: S101
+        # Only keep branches that have commits ahead (unpushed local commits)
+        filtered["branches_out_of_sync"] = {
+            branch: status
+            for branch, status in branches.items()
+            if isinstance(status, dict)
+            and isinstance(commits_ahead := status.get("commits_ahead"), int)
+            and commits_ahead > 0
+        }
+        if not filtered["branches_out_of_sync"]:
+            del filtered["branches_out_of_sync"]
+    return filtered
+
+
 def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> RepoStats:
     """Return issues for a repos in a folder."""
     try:
@@ -176,13 +205,11 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
             )
             tags_st = repo_issues_in_tags(repo, slow=slow, include_all=include_all)
             submodules_st = {
-                f"/{submodule.path}": {
-                    k: v
-                    for k, v in issues_for_one_folder(
+                f"/{submodule.path}": _filter_submodule_issues(
+                    issues_for_one_folder(
                         Path(submodule.abspath), slow=slow, include_all=include_all
-                    ).items()
-                    if k not in ["is_detached_head"]
-                }
+                    )
+                )
                 for submodule in repo.submodules
             }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
