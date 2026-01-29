@@ -8,6 +8,7 @@ from git import Repo
 
 from git_folder_status.git_folder_status import (
     RepoStats,
+    _filter_submodule_issues,
     branch_status,
     is_file,
     issues_for_all_subfolders,
@@ -44,6 +45,108 @@ class TestShortenList:
         items = [f"item{i}" for i in range(10)]
         result = shorten_list(items, limit=10)
         assert result == items
+
+
+class TestFilterSubmoduleIssues:
+    """Test _filter_submodule_issues function."""
+
+    def test_removes_is_detached_head(self) -> None:
+        """Test that is_detached_head is filtered out."""
+        issues: RepoStats = {
+            "is_dirty": True,
+            "is_detached_head": True,
+        }
+        result = _filter_submodule_issues(issues)
+        assert "is_detached_head" not in result
+        assert result["is_dirty"] is True
+
+    def test_removes_branches_only_behind(self) -> None:
+        """Test that branches only behind remote are filtered out."""
+        issues: RepoStats = {
+            "branches_out_of_sync": {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_behind": 5,
+                    "commits_ahead": 0,
+                },
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        # branches_out_of_sync should be removed entirely since no branches are ahead
+        assert "branches_out_of_sync" not in result
+
+    def test_keeps_branches_ahead(self) -> None:
+        """Test that branches with commits ahead are kept."""
+        issues: RepoStats = {
+            "branches_out_of_sync": {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_behind": 0,
+                    "commits_ahead": 2,
+                },
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        assert "branches_out_of_sync" in result
+        assert "main" in result["branches_out_of_sync"]  # type: ignore[operator]
+
+    def test_keeps_branches_both_ahead_and_behind(self) -> None:
+        """Test that branches both ahead and behind are kept."""
+        issues: RepoStats = {
+            "branches_out_of_sync": {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_behind": 3,
+                    "commits_ahead": 2,
+                },
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        assert "branches_out_of_sync" in result
+        assert "main" in result["branches_out_of_sync"]  # type: ignore[operator]
+
+    def test_filters_mixed_branches(self) -> None:
+        """Test filtering when some branches are ahead and some only behind."""
+        issues: RepoStats = {
+            "branches_out_of_sync": {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_behind": 4,
+                    "commits_ahead": 0,
+                },
+                "feature": {
+                    "remote_branch": "origin/feature",
+                    "commits_behind": 0,
+                    "commits_ahead": 1,
+                },
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        assert "branches_out_of_sync" in result
+        branches = result["branches_out_of_sync"]
+        assert isinstance(branches, dict)
+        assert "main" not in branches  # Only behind, filtered out
+        assert "feature" in branches  # Ahead, kept
+
+    def test_preserves_other_issues(self) -> None:
+        """Test that other issues are preserved."""
+        issues: RepoStats = {
+            "is_dirty": True,
+            "untracked_files": ["file.txt"],
+            "stash_count": 2,
+            "branches_out_of_sync": {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_behind": 4,
+                    "commits_ahead": 0,
+                },
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        assert result["is_dirty"] is True
+        assert result["untracked_files"] == ["file.txt"]
+        assert result["stash_count"] == 2
+        assert "branches_out_of_sync" not in result
 
 
 class TestRepoStats:
