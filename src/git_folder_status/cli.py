@@ -30,6 +30,7 @@ def git_folder_status(  # noqa: PLR0913
     empty: Annotated[bool, Parameter(alias="-e")] = False,
     include_all: Annotated[bool, Parameter(name=["-a", "--all"])] = False,
     slow: Annotated[bool, Parameter(alias="-s")] = False,
+    include_behind: Annotated[bool, Parameter(alias="-b")] = False,
 ) -> int:
     """Find all unsaved data in a directory.
 
@@ -49,6 +50,8 @@ def git_folder_status(  # noqa: PLR0913
         show other info for repos
     slow
         allow slow operations
+    include_behind
+        include branches that are only behind remote
     """
     issues = issues_for_all_subfolders(
         directory,
@@ -56,6 +59,7 @@ def git_folder_status(  # noqa: PLR0913
         exclude_dir,
         slow=slow,
         include_all=include_all,
+        include_behind=include_behind,
     )
     try:
         report = format_report(issues, include_ok=empty, fmt=fmt)

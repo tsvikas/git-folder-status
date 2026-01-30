@@ -101,6 +101,7 @@ def repo_issues_in_branches(
     *,
     slow: bool,  # noqa: ARG001
     include_all: bool,
+    include_behind: bool,
 ) -> RepoStats:
     """Return issues for all branches in a repo."""
     branches_st = all_branches_status(repo)
@@ -118,7 +119,11 @@ def repo_issues_in_branches(
         for k, v in branches_st.items()
         if v["remote_branch"]
         and v.get("remote_branch_exists", True)
-        and (v["commits_behind"] or v["commits_ahead"])
+        and (
+            (v["commits_behind"] or v["commits_ahead"])
+            if include_behind
+            else v["commits_ahead"]
+        )
     }
     if include_all:
         issues["branches"] = {
@@ -193,7 +198,9 @@ def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
     return filtered
 
 
-def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> RepoStats:
+def issues_for_one_folder(
+    folder: Path, *, slow: bool, include_all: bool, include_behind: bool
+) -> RepoStats:
     """Return issues for a repos in a folder."""
     try:
         with Repo(
@@ -201,13 +208,19 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
         ) as repo:
             repo_st = repo_issues_in_stats(repo, slow=slow, include_all=include_all)
             branches_st = repo_issues_in_branches(
-                repo, slow=slow, include_all=include_all
+                repo,
+                slow=slow,
+                include_all=include_all,
+                include_behind=include_behind,
             )
             tags_st = repo_issues_in_tags(repo, slow=slow, include_all=include_all)
             submodules_st = {
                 f"/{submodule.path}": _filter_submodule_issues(
                     issues_for_one_folder(
-                        Path(submodule.abspath), slow=slow, include_all=include_all
+                        Path(submodule.abspath),
+                        slow=slow,
+                        include_all=include_all,
+                        include_behind=include_behind,
                     )
                 )
                 for submodule in repo.submodules
@@ -226,13 +239,14 @@ def issues_for_one_folder(folder: Path, *, slow: bool, include_all: bool) -> Rep
         return issues
 
 
-def _issues_for_all_subfolders(
+def _issues_for_all_subfolders(  # noqa: PLR0913
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
     *,
     slow: bool,
     include_all: bool,
+    include_behind: bool,
 ) -> dict[Path, RepoStats]:
     exclude_dirs = exclude_dirs or []
     issues: dict[Path, RepoStats] = {}
@@ -247,12 +261,22 @@ def _issues_for_all_subfolders(
                 continue
         if not folder.is_dir():
             continue
-        summary = issues_for_one_folder(folder, slow=slow, include_all=include_all)
+        summary = issues_for_one_folder(
+            folder,
+            slow=slow,
+            include_all=include_all,
+            include_behind=include_behind,
+        )
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
         else:
             subfolder_summary = _issues_for_all_subfolders(
-                folder, recurse - 1, exclude_dirs, slow=slow, include_all=include_all
+                folder,
+                recurse - 1,
+                exclude_dirs,
+                slow=slow,
+                include_all=include_all,
+                include_behind=include_behind,
             )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
                 issues.update(subfolder_summary)
@@ -265,13 +289,14 @@ def _issues_for_all_subfolders(
     return issues
 
 
-def issues_for_all_subfolders(
+def issues_for_all_subfolders(  # noqa: PLR0913
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
     *,
     slow: bool = False,
     include_all: bool = False,
+    include_behind: bool = False,
 ) -> dict[str, RepoStats]:
     """Return issues for all repos in a folder."""
     basedir = Path(basedir)
@@ -291,7 +316,10 @@ def issues_for_all_subfolders(
             from_basedir = "<this repos>"
         return {
             from_basedir: issues_for_one_folder(
-                basedir_working_dir, slow=slow, include_all=include_all
+                basedir_working_dir,
+                slow=slow,
+                include_all=include_all,
+                include_behind=include_behind,
             )
         }
     except InvalidGitRepositoryError:
@@ -299,7 +327,12 @@ def issues_for_all_subfolders(
 
     # otherwise we check all subfolders:
     issues_by_path = _issues_for_all_subfolders(
-        basedir, recurse, exclude_dirs, slow=slow, include_all=include_all
+        basedir,
+        recurse,
+        exclude_dirs,
+        slow=slow,
+        include_all=include_all,
+        include_behind=include_behind,
     )
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues_by_path.items()}
     # and we check the basedir itself:
