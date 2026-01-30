@@ -12,25 +12,29 @@
 
 ## Overview
 
-Find all subdirectories with uncommitted or unpushed code.
+Scans a directory tree and reports Git repositories that aren't fully synced
+with their remote.
+
+A day-to-day tool for when you work across multiple projects and want to keep
+everything pushed and backed up. One command instead of running `git status`
+in each repo.
 
 ![Screenshot](assets/screenshot.png)
 
-This script scans through a directory recursively to identify the status of
-all Git repositories found within.
+### Why not just `git status`?
 
-It returns a list of directories with their issues, including:
+`git status` only shows uncommitted changes in the current repo. This tool
+runs across all repos in a directory tree and catches things `git status`
+misses:
 
-- directories with any content that are not part of a repo.
-- uncommitted changes
-- untracked files
-- stash entries
-- detached head
-- branches without remote
-- branches with unpushed changes
-- tags without a remote tag (only with -s/--slow)
-- tags that differ from their remote tag (only with -s/--slow)
-- broken links outside repos
+- Stash entries
+- Detached HEAD
+- Branches without a remote
+- Branches ahead of or behind remote
+- Tags not on remote, or differing from remote (`--slow`)
+- Non-repo directories containing files
+- Broken symlinks
+- And of course, uncommitted changes and untracked files
 
 ## Install
 
