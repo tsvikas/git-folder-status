@@ -318,7 +318,9 @@ class TestRepoIssuesInBranches:
                 "feature": {"remote_branch": False},
             }
 
-            result = repo_issues_in_branches(mock_repo, slow=False, include_all=False)
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=False
+            )
 
             assert result["branches_without_remote"] == ["feature"]
 
@@ -338,9 +340,78 @@ class TestRepoIssuesInBranches:
                 },
             }
 
-            result = repo_issues_in_branches(mock_repo, slow=False, include_all=True)
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=True, include_behind=False
+            )
 
             assert "branches" in result
+
+    def test_include_behind_false_filters_behind_only(self) -> None:
+        """Test that include_behind=False filters branches only behind."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_ahead": 0,
+                    "commits_behind": 5,
+                    "remote_branch_exists": True,
+                },
+                "feature": {
+                    "remote_branch": "origin/feature",
+                    "commits_ahead": 2,
+                    "commits_behind": 0,
+                    "remote_branch_exists": True,
+                },
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=False
+            )
+
+            # main is only behind (needs pull) - should be filtered out
+            # feature is ahead - should be included
+            assert "branches_out_of_sync" in result
+            branches_out_of_sync = result["branches_out_of_sync"]
+            assert isinstance(branches_out_of_sync, dict)
+            assert "main" not in branches_out_of_sync
+            assert "feature" in branches_out_of_sync
+
+    def test_include_behind_true_includes_behind_only(self) -> None:
+        """Test that include_behind=True includes branches only behind."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "main": {
+                    "remote_branch": "origin/main",
+                    "commits_ahead": 0,
+                    "commits_behind": 5,
+                    "remote_branch_exists": True,
+                },
+                "feature": {
+                    "remote_branch": "origin/feature",
+                    "commits_ahead": 2,
+                    "commits_behind": 0,
+                    "remote_branch_exists": True,
+                },
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=True
+            )
+
+            # Both branches should be included with include_behind=True
+            assert "branches_out_of_sync" in result
+            branches_out_of_sync = result["branches_out_of_sync"]
+            assert isinstance(branches_out_of_sync, dict)
+            assert "main" in branches_out_of_sync
+            assert "feature" in branches_out_of_sync
 
 
 class TestRepoIssuesInTags:
@@ -389,12 +460,16 @@ class TestIssuesForOneFolder:
         # Create some files to make it non-empty
         (tmp_path / "file.txt").write_text("content")
 
-        result = issues_for_one_folder(tmp_path, slow=False, include_all=False)
+        result = issues_for_one_folder(
+            tmp_path, slow=False, include_all=False, include_behind=False
+        )
         assert result == {"is_git": False}
 
     def test_empty_non_git_directory(self, tmp_path: Path) -> None:
         """Test handling of empty non-git directory."""
-        result = issues_for_one_folder(tmp_path, slow=False, include_all=False)
+        result = issues_for_one_folder(
+            tmp_path, slow=False, include_all=False, include_behind=False
+        )
         assert result == {}
 
     def test_repository_error_handling(self) -> None:
@@ -402,7 +477,9 @@ class TestIssuesForOneFolder:
         folder = Path("/nonexistent")
 
         with pytest.raises(RuntimeError, match="Error while analyzing repo"):
-            issues_for_one_folder(folder, slow=False, include_all=False)
+            issues_for_one_folder(
+                folder, slow=False, include_all=False, include_behind=False
+            )
 
 
 class TestIsFile:
