@@ -11,6 +11,7 @@ from git_folder_status.git_folder_status import (
     _filter_submodule_issues,
     branch_status,
     is_file,
+    is_orphaned_worktree,
     issues_for_all_subfolders,
     issues_for_one_folder,
     repo_issues_in_branches,
@@ -472,6 +473,17 @@ class TestIssuesForOneFolder:
         )
         assert result == {}
 
+    def test_orphaned_worktree(self, tmp_path: Path) -> None:
+        """Test handling of orphaned git worktree."""
+        # Create a .git file pointing to a nonexistent worktree directory
+        (tmp_path / ".git").write_text("gitdir: /nonexistent/worktree/path\n")
+        (tmp_path / "some_file.py").write_text("content")
+
+        result = issues_for_one_folder(
+            tmp_path, slow=False, include_all=False, include_behind=False
+        )
+        assert result == {"error": "orphaned worktree"}
+
     def test_repository_error_handling(self) -> None:
         """Test error handling for repository analysis."""
         folder = Path("/nonexistent")
@@ -480,6 +492,44 @@ class TestIssuesForOneFolder:
             issues_for_one_folder(
                 folder, slow=False, include_all=False, include_behind=False
             )
+
+
+class TestIsOrphanedWorktree:
+    """Test is_orphaned_worktree function."""
+
+    def test_not_a_worktree(self, tmp_path: Path) -> None:
+        """Test regular directory is not an orphaned worktree."""
+        assert is_orphaned_worktree(tmp_path) is False
+
+    def test_regular_git_repo(self, tmp_path: Path) -> None:
+        """Test regular git repo (.git is a directory) is not orphaned."""
+        (tmp_path / ".git").mkdir()
+        assert is_orphaned_worktree(tmp_path) is False
+
+    def test_valid_worktree(self, tmp_path: Path) -> None:
+        """Test valid worktree is not orphaned."""
+        gitdir = tmp_path / "gitdir_target"
+        gitdir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {gitdir}\n")
+        assert is_orphaned_worktree(worktree) is False
+
+    def test_orphaned_worktree(self, tmp_path: Path) -> None:
+        """Test worktree pointing to nonexistent gitdir is orphaned."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: /nonexistent/path\n")
+        assert is_orphaned_worktree(worktree) is True
+
+    def test_relative_gitdir(self, tmp_path: Path) -> None:
+        """Test worktree with relative gitdir path."""
+        gitdir = tmp_path / "repo" / ".git" / "worktrees" / "wt"
+        gitdir.mkdir(parents=True)
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: ../repo/.git/worktrees/wt\n")
+        assert is_orphaned_worktree(worktree) is False
 
 
 class TestIsFile:

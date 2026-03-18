@@ -10,7 +10,7 @@ import sys
 from collections import ChainMap
 from pathlib import Path
 
-from git import InvalidGitRepositoryError, Repo
+from git import GitCommandError, InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 
 
@@ -198,6 +198,24 @@ def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
     return filtered
 
 
+def is_orphaned_worktree(folder: Path) -> bool:
+    """Check if folder is an orphaned git worktree.
+
+    A worktree has a `.git` file (not directory) pointing to a gitdir.
+    If that gitdir no longer exists, the worktree is orphaned.
+    """
+    git_path = folder / ".git"
+    if not git_path.is_file():
+        return False
+    text = git_path.read_text().strip()
+    if not text.startswith("gitdir:"):
+        return False
+    gitdir = Path(text.removeprefix("gitdir:").strip())
+    if not gitdir.is_absolute():
+        gitdir = (folder / gitdir).resolve()
+    return not gitdir.is_dir()
+
+
 def issues_for_one_folder(
     folder: Path, *, slow: bool, include_all: bool, include_behind: bool
 ) -> RepoStats:
@@ -233,6 +251,10 @@ def issues_for_one_folder(
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
     except InvalidGitRepositoryError:
         return {"is_git": False} if any(folder.glob("*")) else {}
+    except GitCommandError:
+        if is_orphaned_worktree(folder):
+            return {"error": "orphaned worktree"}
+        raise
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:
