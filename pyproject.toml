@@ -46,7 +46,7 @@ urls.Issues = "https://github.com/tsvikas/git-folder-status/issues"
 requires-python = ">=3.10"
 dependencies = [
   "colorama >=0.4.6",
-  "gitpython >=3.1",
+  "gitpython >=3.1.31",
   "PyYAML >=0",
   "cyclopts >=4",
 ]
