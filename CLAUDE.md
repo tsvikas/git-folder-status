@@ -10,31 +10,29 @@ This project uses **uv** and **just** for development workflow:
 # Setup development environment (run after cloning)
 uv run just prepare
 
-# Code quality checks
+# Code quality
 uv run just format           # Format code (isort + black + docs formatting)
-uv run just check            # Run all quality checks and tests (excluding pylint)
-uv run just format-and-check # Format then check - recommended workflow
+uv run just lint             # Run ruff + mypy + deptry + pre-commit
+uv run just test             # Run pytest with coverage
+uv run just quick-tools      # Fast formatting + linting (alias: q)
 
-# Testing
-uv run just lint             # Run ruff + mypy only (subset of just check)
-uv run just test             # Run pytest with coverage (subset of just check)
+# Combined workflows
+uv run just check-and-push   # Assert clean repo + test + lint, then git push
 
 # Documentation
 uv run just build-docs       # Build MkDocs documentation
 uv run just serve-docs       # Serve docs locally
 
 # Other tasks
-uv run just update-deps      # Update all dependencies
-uv run just check-and-push   # Check everything then git push
+uv run just deps-update      # Update all dependencies
+uv run just test-lowest 3.10 # Test with lowest dependency versions
 ```
 
-**CRITICAL**: Always run `uv run just format-and-check` before committing.
-This formats code and runs all quality checks including tests.
+**CRITICAL**: Always run `uv run just format` then `uv run just lint` and `uv run just test` before committing.
 
-- If formatting changes files during this process,
-  you must `git add` the changes and re-commit to include the formatted code.
-- If a tool recognized an issue, fix it and re-run just that tool.
-- Finish with a full format-and-check.
+- If formatting changes files, `git add` the changes and re-commit.
+- If a tool finds an issue, fix it and re-run just that tool.
+- Finish with a full `format`, `lint`, `test` cycle.
 
 ## Architecture
 
@@ -43,7 +41,7 @@ This formats code and runs all quality checks including tests.
 ### Core Components
 
 - **Main Logic**: `src/git_folder_status/git_folder_status.py` - Contains all Git analysis logic using GitPython
-- **CLI Interface**: `src/git_folder_status/cli.py` - Typer-based CLI with comprehensive options
+- **CLI Interface**: `src/git_folder_status/cli.py` - Cyclopts-based CLI with comprehensive options
 - **Entry Point**: Installable as `git-folder-status` command
 
 ### Key Design Patterns
@@ -55,7 +53,7 @@ This formats code and runs all quality checks including tests.
 
 ## Code Quality Standards
 
-This project enforces strict quality standards through `just format-and-check`.
+This project enforces strict quality standards through `just format`, `just lint`, and `just test`.
 
 ### Quality Tools
 
@@ -80,7 +78,7 @@ This project enforces strict quality standards through `just format-and-check`.
   - use `uv add/remove` to add/remove dependencies
   - use `uv sync` to install dependencies
 - **GitPython** for repository operations
-- **Typer** for CLI interface
+- **Cyclopts** for CLI interface
 - Supports Python 3.10+ including PyPy variants
 
 ### Template-based Project
@@ -99,7 +97,7 @@ This project is based on `tsvikas/python-template` v0.19.1. Core configuration i
 1. Add CLI options in `src/git_folder_status/cli.py` if needed
 1. Add comprehensive tests in `tests/`. Use `uv run pytest` to check your tests.
 1. Update type hints and ensure MyPy passes
-1. **MANDATORY**: Run `uv run just format-and-check` before committing
+1. **MANDATORY**: Run `uv run just format` then `uv run just lint` and `uv run just test` before committing
 1. If formatting changes files during step 5, `git add` the changes and re-commit
 
 ### Performance Considerations
