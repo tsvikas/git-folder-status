@@ -251,10 +251,10 @@ def issues_for_one_folder(
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
     except InvalidGitRepositoryError:
         return {"is_git": False} if any(folder.glob("*")) else {}
-    except GitCommandError:
+    except GitCommandError as e:
         if is_orphaned_worktree(folder):
             return {"error": "orphaned worktree"}
-        raise
+        raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:
