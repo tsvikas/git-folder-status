@@ -59,4 +59,4 @@ class TestFormatReport:
         """Test invalid format raises ValueError."""
         issues: dict[str, RepoStats] = {"repo1": {"is_dirty": True}}
         with pytest.raises(ValueError, match="format_report got an unsupported"):
-            format_report(issues, include_ok=True, fmt="invalid")  # type: ignore[arg-type]
+            format_report(issues, include_ok=True, fmt="invalid")  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
