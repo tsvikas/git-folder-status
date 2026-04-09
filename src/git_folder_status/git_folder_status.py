@@ -13,6 +13,8 @@ from pathlib import Path
 from git import GitCommandError, InvalidGitRepositoryError, Repo
 from git.refs.head import Head
 
+IGNORED_FILENAMES = [".DS_Store"]
+
 
 def shorten_list(items: list[str], limit: int = 10) -> list[str]:
     """Truncate a list of strings from the middle."""
@@ -302,7 +304,11 @@ def _issues_for_all_subfolders(  # noqa: PLR0913
             )
             if any(st.get("is_git", True) for st in subfolder_summary.values()):
                 issues.update(subfolder_summary)
-                untracked_files = [p.name for p in folder.glob("*") if p.is_file()]
+                untracked_files = [
+                    p.name
+                    for p in folder.glob("*")
+                    if p.is_file() and p.name not in IGNORED_FILENAMES
+                ]
                 if untracked_files:
                     issues[folder] = {"is_git": False}
                     issues[folder]["untracked_files"] = shorten_list(untracked_files)
@@ -358,7 +364,11 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     )
     issues = {k.relative_to(basedir).as_posix(): v for k, v in issues_by_path.items()}
     # and we check the basedir itself:
-    basedir_files = [p.name for p in basedir.glob("*") if is_file(p)]
+    basedir_files = [
+        p.name
+        for p in basedir.glob("*")
+        if is_file(p) and p.name not in IGNORED_FILENAMES
+    ]
     if basedir_files:
         issues["."] = {"untracked_files": shorten_list(basedir_files)}
     return issues
