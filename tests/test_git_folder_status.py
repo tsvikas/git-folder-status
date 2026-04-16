@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
-from git import Repo
+from git import GitCommandError, Repo
 
 from git_folder_status.git_folder_status import (
     RepoStats,
@@ -493,6 +493,17 @@ class TestIssuesForOneFolder:
                 folder, slow=False, include_all=False, include_behind=False
             )
 
+    def test_git_command_error_non_orphaned(self, tmp_path: Path) -> None:
+        """Test GitCommandError on a folder that is not an orphaned worktree."""
+        # Create a directory that looks like a git repo but raises GitCommandError
+        (tmp_path / ".git").mkdir()
+        with patch("git_folder_status.git_folder_status.Repo") as mock_repo_class:
+            mock_repo_class.side_effect = GitCommandError("git status", 128)
+            with pytest.raises(RuntimeError, match="Error while analyzing repo"):
+                issues_for_one_folder(
+                    tmp_path, slow=False, include_all=False, include_behind=False
+                )
+
 
 class TestIsOrphanedWorktree:
     """Test is_orphaned_worktree function."""
@@ -529,6 +540,13 @@ class TestIsOrphanedWorktree:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         (worktree / ".git").write_text("gitdir: ../repo/.git/worktrees/wt\n")
+        assert is_orphaned_worktree(worktree) is False
+
+    def test_git_file_without_gitdir_prefix(self, tmp_path: Path) -> None:
+        """Test .git file that doesn't start with 'gitdir:' is not orphaned."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text("some other content\n")
         assert is_orphaned_worktree(worktree) is False
 
 
@@ -664,6 +682,57 @@ class TestIssuesForAllSubfolders:
             assert "subdir" in result
             assert result["subdir"]["is_git"] is False
             assert "untracked_files" in result["subdir"]
+
+    def test_recursive_subfolders_no_loose_files_in_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """Test recursive scan where parent has git repos but no loose files."""
+        # basedir/parent/git_repo (a git repo)
+        # parent has only subdirectories, no regular files
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        git_repo = parent / "git_repo"
+        git_repo.mkdir()
+
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder"
+        ) as mock_issues:
+
+            def side_effect(folder: Path, **_kwargs: bool) -> RepoStats:
+                if folder.name == "parent":
+                    return {"is_git": False}
+                if folder.name == "git_repo":
+                    return {"is_dirty": True}
+                return {}
+
+            mock_issues.side_effect = side_effect
+
+            result = issues_for_all_subfolders(
+                tmp_path, recurse=2, slow=False, include_all=False
+            )
+
+            # The git_repo should appear in results
+            assert any("git_repo" in str(k) for k in result)
+            # Parent should NOT have an entry since it has no loose files
+            assert "parent" not in result
+
+    def test_basedir_with_loose_files(self, tmp_path: Path) -> None:
+        """Test basedir with loose files reports them under '.' key."""
+        # Create a file directly in basedir (not inside a git repo)
+        (tmp_path / "stray_file.txt").write_text("content")
+        # Create a subdirectory too
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("content")
+
+        result = issues_for_all_subfolders(
+            tmp_path, recurse=1, slow=False, include_all=False
+        )
+
+        assert "." in result
+        untracked = result["."]["untracked_files"]
+        assert isinstance(untracked, list)
+        assert "stray_file.txt" in untracked
 
     def test_directory_with_only_empty_subdirs(self, tmp_path: Path) -> None:
         """Test directory with only empty subdirectories."""
