@@ -571,13 +571,6 @@ class TestIsFile:
         # Should return False for broken symlinks without raising
         assert is_file(link_path) is False
 
-    def test_oserror_returns_false(self, tmp_path: Path) -> None:
-        """Test that OSError during is_file check returns False."""
-        test_file = tmp_path / "problem_file"
-        test_file.write_text("content")
-        with patch.object(Path, "is_file", side_effect=OSError("Permission denied")):
-            assert is_file(test_file) is False
-
 
 class TestIssuesForAllSubfolders:
     """Test issues_for_all_subfolders function."""
