@@ -256,7 +256,8 @@ def issues_for_one_folder(
     except GitCommandError as e:
         if is_orphaned_worktree(folder):
             return {"error": "orphaned worktree"}
-        raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
+        stderr = (e.stderr or "").strip().strip("'\"") or str(e)
+        return {"error": f"git error: {stderr}"}
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:

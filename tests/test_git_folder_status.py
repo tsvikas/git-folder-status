@@ -498,11 +498,14 @@ class TestIssuesForOneFolder:
         # Create a directory that looks like a git repo but raises GitCommandError
         (tmp_path / ".git").mkdir()
         with patch("git_folder_status.git_folder_status.Repo") as mock_repo_class:
-            mock_repo_class.side_effect = GitCommandError("git status", 128)
-            with pytest.raises(RuntimeError, match="Error while analyzing repo"):
-                issues_for_one_folder(
-                    tmp_path, slow=False, include_all=False, include_behind=False
-                )
+            mock_repo_class.side_effect = GitCommandError(
+                "git status", 128, b"fatal: out of disk space"
+            )
+            result = issues_for_one_folder(
+                tmp_path, slow=False, include_all=False, include_behind=False
+            )
+        assert "error" in result
+        assert "out of disk space" in str(result["error"])
 
 
 class TestIsOrphanedWorktree:
