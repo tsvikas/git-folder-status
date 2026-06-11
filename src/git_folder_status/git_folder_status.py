@@ -33,7 +33,10 @@ RepoStats = dict[
 
 def repo_stats(repo: Repo) -> RepoStats:
     """Return stats for a repo."""
-    untracked_files = shorten_list(repo.untracked_files)
+    # `git status` and `git stash` fail without a work tree, so skip them
+    # in bare repos; the ref-based stats below work fine
+    bare = repo.bare
+    untracked_files = [] if bare else shorten_list(repo.untracked_files)
     head = repo.head
     try:
         commit = head.commit
@@ -41,6 +44,7 @@ def repo_stats(repo: Repo) -> RepoStats:
         # handle an empty repo
         commit = None
     return {
+        "bare": bare,
         "is_dirty": repo.is_dirty(),
         "untracked_files": untracked_files,
         "is_detached_head": head.is_detached,
@@ -48,7 +52,7 @@ def repo_stats(repo: Repo) -> RepoStats:
         "head_commit_hash_short": commit.hexsha[:7] if commit else None,
         "branches": {b.name: b.commit.hexsha for b in repo.branches},
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
-        "stash_count": len(repo.git.stash("list").splitlines()),
+        "stash_count": 0 if bare else len(repo.git.stash("list").splitlines()),
     }
 
 

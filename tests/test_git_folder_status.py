@@ -156,6 +156,7 @@ class TestRepoStats:
     def test_repo_stats_normal(self) -> None:
         """Test repo_stats with normal repo."""
         mock_repo = Mock(spec=Repo)
+        mock_repo.bare = False
         mock_repo.is_dirty.return_value = True
         mock_repo.untracked_files = ["file1.txt", "file2.txt"]
 
@@ -190,6 +191,7 @@ class TestRepoStats:
     def test_repo_stats_empty_repo(self) -> None:
         """Test repo_stats with empty repo (no commits)."""
         mock_repo = Mock(spec=Repo)
+        mock_repo.bare = False
         mock_repo.is_dirty.return_value = False
         mock_repo.untracked_files = []
 
@@ -212,6 +214,30 @@ class TestRepoStats:
         result = repo_stats(mock_repo)
 
         assert result["head_commit_hash_short"] is None
+
+    def test_repo_stats_bare_repo(self) -> None:
+        """Test that work-tree stats are skipped in a bare repo."""
+        mock_repo = Mock(spec=Repo)
+        mock_repo.bare = True
+        mock_repo.is_dirty.return_value = False
+
+        mock_head = Mock()
+        mock_head.is_detached = False
+        mock_head.commit = Mock(hexsha="1234567890abcdef")
+        mock_repo.head = mock_head
+
+        mock_repo.active_branch = Mock()
+        mock_repo.active_branch.name = "main"
+        mock_repo.branches = []
+        mock_repo.remotes = []
+
+        result = repo_stats(mock_repo)
+
+        assert result["bare"] is True
+        assert result["untracked_files"] == []
+        assert result["stash_count"] == 0
+        # the underlying git commands fail without a work tree
+        mock_repo.git.stash.assert_not_called()
 
 
 class TestRepoIssuesInStats:
@@ -554,6 +580,22 @@ class TestIssuesForOneFolder:
             tmp_path, slow=False, include_all=False, include_behind=False
         )
         assert result == {}
+
+    def test_bare_repository(self, tmp_path: Path) -> None:
+        """Test that a bare repo is analyzed without errors."""
+        with Repo.init(tmp_path, bare=True):
+            pass
+
+        result = issues_for_one_folder(
+            tmp_path, slow=False, include_all=False, include_behind=False
+        )
+        assert result == {}
+
+        result = issues_for_one_folder(
+            tmp_path, slow=False, include_all=True, include_behind=False
+        )
+        assert "error" not in result
+        assert result["bare"] is True
 
     def test_orphaned_worktree(self, tmp_path: Path) -> None:
         """Test handling of orphaned git worktree."""
