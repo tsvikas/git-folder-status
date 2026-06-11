@@ -265,6 +265,7 @@ class TestBranchStatus:
     def test_no_tracking_branch(self) -> None:
         """Test branch with no tracking branch."""
         mock_repo = Mock(spec=Repo)
+        mock_repo.remotes = []
         mock_branch = Mock()
         mock_branch.tracking_branch.return_value = None
 
@@ -274,10 +275,62 @@ class TestBranchStatus:
     def test_local_tracking_branch(self) -> None:
         """Test branch tracking a local branch."""
         mock_repo = Mock(spec=Repo)
+        mock_repo.remotes = []
         mock_branch = Mock()
         mock_tracking = Mock()
         mock_tracking.name = ".local_branch"
         mock_branch.tracking_branch.return_value = mock_tracking
+
+        result = branch_status(mock_repo, mock_branch)
+        assert result == {"remote_branch": False}
+
+    @staticmethod
+    def _repo_with_remote_refs(ref_names: list[str]) -> Mock:
+        mock_repo = Mock(spec=Repo)
+        mock_remote = Mock()
+        mock_remote.name = "origin"
+        mock_remote.refs = []
+        for ref_name in ref_names:
+            mock_ref = Mock()
+            mock_ref.name = ref_name
+            mock_remote.refs.append(mock_ref)
+        mock_repo.remotes = [mock_remote]
+        mock_repo.iter_commits.return_value = iter([])
+        return mock_repo
+
+    def test_no_tracking_branch_with_matching_remote(self) -> None:
+        """Test branch pushed without `-u`: remote exists, no upstream set."""
+        mock_repo = self._repo_with_remote_refs(["origin/user/feature"])
+        mock_branch = Mock()
+        mock_branch.name = "feature"
+        mock_branch.tracking_branch.return_value = None
+
+        result = branch_status(mock_repo, mock_branch)
+        assert result == {
+            "remote_branch": False,
+            "matching_remote_branch": "origin/user/feature",
+            "commits_behind": 0,
+            "commits_ahead": 0,
+        }
+
+    def test_matching_remote_prefers_exact_name(self) -> None:
+        """Test that `origin/feature` is preferred over prefixed variants."""
+        mock_repo = self._repo_with_remote_refs(
+            ["origin/user/feature", "origin/feature"]
+        )
+        mock_branch = Mock()
+        mock_branch.name = "feature"
+        mock_branch.tracking_branch.return_value = None
+
+        result = branch_status(mock_repo, mock_branch)
+        assert result["matching_remote_branch"] == "origin/feature"
+
+    def test_matching_remote_requires_full_name_component(self) -> None:
+        """Test that `origin/other-feature` does not match a local `feature`."""
+        mock_repo = self._repo_with_remote_refs(["origin/other-feature"])
+        mock_branch = Mock()
+        mock_branch.name = "feature"
+        mock_branch.tracking_branch.return_value = None
 
         result = branch_status(mock_repo, mock_branch)
         assert result == {"remote_branch": False}
@@ -324,6 +377,35 @@ class TestRepoIssuesInBranches:
             )
 
             assert result["branches_without_remote"] == ["feature"]
+
+    def test_branches_without_tracking(self) -> None:
+        """Test that pushed-but-untracked branches get their own category."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "feature": {
+                    "remote_branch": False,
+                    "matching_remote_branch": "origin/user/feature",
+                    "commits_behind": 0,
+                    "commits_ahead": 2,
+                },
+                "local-only": {"remote_branch": False},
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=False
+            )
+
+            assert result["branches_without_remote"] == ["local-only"]
+            assert result["branches_without_tracking"] == {
+                "feature": {
+                    "matching_remote_branch": "origin/user/feature",
+                    "commits_ahead": 2,
+                },
+            }
 
     def test_include_all_branches(self) -> None:
         """Test include_all flag includes synced branches."""

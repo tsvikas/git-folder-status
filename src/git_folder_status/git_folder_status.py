@@ -12,6 +12,7 @@ from pathlib import Path
 
 from git import GitCommandError, InvalidGitRepositoryError, Repo
 from git.refs.head import Head
+from git.refs.remote import RemoteReference
 
 IGNORED_FILENAMES = [".DS_Store"]
 
@@ -71,16 +72,47 @@ def repo_issues_in_stats(
     return issues
 
 
+def _matching_remote_branch(repo: Repo, branch: Head) -> RemoteReference | None:
+    """Find a remote branch that matches `branch` by name.
+
+    Catches branches that were pushed without `-u`:
+    the remote branch exists, but no upstream is configured.
+    Matches by name suffix, so `origin/user/feature` matches a local `feature`.
+    """
+    suffix = f"/{branch.name}"
+    candidates = [
+        ref
+        for remote in repo.remotes
+        for ref in remote.refs
+        if ref.name.endswith(suffix)
+    ]
+    if not candidates:
+        return None
+    # prefer the conventional `<remote>/<branch>` name over prefixed variants
+    exact_names = {f"{remote.name}{suffix}" for remote in repo.remotes}
+    exact = [ref for ref in candidates if ref.name in exact_names]
+    return (exact or candidates)[0]
+
+
 def branch_status(repo: Repo, branch: Head) -> RepoStats:
     """Return stats for a branch."""
     tracking_branch = branch.tracking_branch()
-    if tracking_branch is None:
-        return {"remote_branch": False}
+    # a tracking name starting with "." means tracking a local branch
+    if tracking_branch is None or tracking_branch.name[0] == ".":
+        # no upstream configured, but the branch may still exist on a remote
+        matching = _matching_remote_branch(repo, branch)
+        if matching is None:
+            return {"remote_branch": False}
+        commits_behind = repo.iter_commits(f"{branch.name}..{matching.name}")
+        commits_ahead = repo.iter_commits(f"{matching.name}..{branch.name}")
+        return {
+            "remote_branch": False,
+            "matching_remote_branch": matching.name,
+            "commits_behind": len(list(commits_behind)),
+            "commits_ahead": len(list(commits_ahead)),
+        }
     local_branch = branch.name
     remote_branch = tracking_branch.name
-    if remote_branch[0] == ".":
-        # tracking a local branch
-        return {"remote_branch": False}
     if remote_branch not in repo.refs:
         return {"remote_branch": remote_branch, "remote_branch_exists": False}
     commits_behind = repo.iter_commits(f"{local_branch}..{remote_branch}")
@@ -109,8 +141,16 @@ def repo_issues_in_branches(
     branches_st = all_branches_status(repo)
     issues: RepoStats = {}
     issues["branches_without_remote"] = [
-        k for k, v in branches_st.items() if not v.get("remote_branch", False)
+        k
+        for k, v in branches_st.items()
+        if not v.get("remote_branch", False) and not v.get("matching_remote_branch")
     ]
+    # pushed without `-u`: the remote branch exists but no upstream is set
+    issues["branches_without_tracking"] = {
+        k: {kk: vv for kk, vv in v.items() if kk != "remote_branch" and vv}
+        for k, v in branches_st.items()
+        if not v.get("remote_branch", False) and v.get("matching_remote_branch")
+    }
     issues["branches_with_missing_remote"] = {
         k: v["remote_branch"]
         for k, v in branches_st.items()
