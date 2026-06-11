@@ -356,8 +356,8 @@ class TestBranchStatus:
 class TestRepoIssuesInBranches:
     """Test repo_issues_in_branches function."""
 
-    def test_branches_without_remote(self) -> None:
-        """Test detection of branches without remote."""
+    def test_branches_local_only(self) -> None:
+        """Test detection of branches that exist only locally."""
         mock_repo = Mock(spec=Repo)
 
         with patch(
@@ -376,9 +376,9 @@ class TestRepoIssuesInBranches:
                 mock_repo, slow=False, include_all=False, include_behind=False
             )
 
-            assert result["branches_without_remote"] == ["feature"]
+            assert result["branches_local_only"] == ["feature"]
 
-    def test_branches_without_tracking(self) -> None:
+    def test_branches_upstream_unset(self) -> None:
         """Test that pushed-but-untracked branches get their own category."""
         mock_repo = Mock(spec=Repo)
 
@@ -399,8 +399,8 @@ class TestRepoIssuesInBranches:
                 mock_repo, slow=False, include_all=False, include_behind=False
             )
 
-            assert result["branches_without_remote"] == ["local-only"]
-            assert result["branches_without_tracking"] == {
+            assert result["branches_local_only"] == ["local-only"]
+            assert result["branches_upstream_unset"] == {
                 "feature": {
                     "matching_remote_branch": "origin/user/feature",
                     "commits_ahead": 2,

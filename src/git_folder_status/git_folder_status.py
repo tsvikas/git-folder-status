@@ -140,18 +140,19 @@ def repo_issues_in_branches(
     """Return issues for all branches in a repo."""
     branches_st = all_branches_status(repo)
     issues: RepoStats = {}
-    issues["branches_without_remote"] = [
+    issues["branches_local_only"] = [
         k
         for k, v in branches_st.items()
         if not v.get("remote_branch", False) and not v.get("matching_remote_branch")
     ]
     # pushed without `-u`: the remote branch exists but no upstream is set
-    issues["branches_without_tracking"] = {
+    issues["branches_upstream_unset"] = {
         k: {kk: vv for kk, vv in v.items() if kk != "remote_branch" and vv}
         for k, v in branches_st.items()
         if not v.get("remote_branch", False) and v.get("matching_remote_branch")
     }
-    issues["branches_with_missing_remote"] = {
+    # upstream is configured but its ref no longer exists (git's "gone" state)
+    issues["branches_upstream_gone"] = {
         k: v["remote_branch"]
         for k, v in branches_st.items()
         if v["remote_branch"] and not v.get("remote_branch_exists", True)
