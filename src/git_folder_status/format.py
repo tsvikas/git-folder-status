@@ -35,6 +35,8 @@ def format_report(
     if not include_ok:
         issues = {k: _prune_clean_worktrees(v) for k, v in issues.items()}
         issues = {k: v for k, v in issues.items() if v}
+    # the formatters keep insertion order, so sort the entries here
+    issues = {k: issues[k] for k in sorted(issues)}
     try:
         return {
             "yaml": _format_yaml,

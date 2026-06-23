@@ -80,6 +80,16 @@ class TestFormatReport:
         parsed = json.loads(result)
         assert parsed["repo"]["worktrees"] == {"wt-clean": {}}
 
+    def test_root_keys_sorted_alphabetically(self) -> None:
+        """Entries are emitted in alphabetical order regardless of input order."""
+        issues: dict[str, RepoStats] = {
+            "charlie": {"is_dirty": True},
+            "alpha": {"is_dirty": True},
+            "bravo": {"is_dirty": True},
+        }
+        result = format_report(issues, include_ok=True, fmt="json")
+        assert list(json.loads(result)) == ["alpha", "bravo", "charlie"]
+
     def test_invalid_format_raises_error(self) -> None:
         """Test invalid format raises ValueError."""
         issues: dict[str, RepoStats] = {"repo1": {"is_dirty": True}}
