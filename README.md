@@ -36,6 +36,10 @@ misses:
 - Broken symlinks
 - And of course, uncommitted changes and untracked files
 
+Linked worktrees of the same repo are grouped under their main worktree, so
+repo-level state (stash, branches, tags) is reported once instead of repeated
+for every worktree.
+
 ## Install
 
 Install this tool using pipx (or uv):
