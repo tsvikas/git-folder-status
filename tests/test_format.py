@@ -55,6 +55,31 @@ class TestFormatReport:
         assert "repo1" in parsed
         assert "repo2" not in parsed
 
+    def test_include_ok_false_prunes_clean_worktrees(self) -> None:
+        """Clean worktrees are dropped, and an entry left empty disappears."""
+        issues: dict[str, RepoStats] = {
+            "with-issue": {
+                "branches_local_only": ["x"],
+                "worktrees": {"wt-clean": {}, "wt-dirty": {"is_dirty": True}},
+            },
+            "only-clean-worktree": {"worktrees": {"wt-clean": {}}},
+        }
+        result = format_report(issues, include_ok=False, fmt="json")
+        parsed = json.loads(result)
+        # an entry whose only content was a clean worktree is removed entirely
+        assert "only-clean-worktree" not in parsed
+        # the clean worktree is dropped, the dirty one is kept
+        assert parsed["with-issue"]["worktrees"] == {"wt-dirty": {"is_dirty": True}}
+
+    def test_include_ok_true_keeps_clean_worktrees(self) -> None:
+        """With include_ok, clean worktrees are listed."""
+        issues: dict[str, RepoStats] = {
+            "repo": {"worktrees": {"wt-clean": {}}},
+        }
+        result = format_report(issues, include_ok=True, fmt="json")
+        parsed = json.loads(result)
+        assert parsed["repo"]["worktrees"] == {"wt-clean": {}}
+
     def test_invalid_format_raises_error(self) -> None:
         """Test invalid format raises ValueError."""
         issues: dict[str, RepoStats] = {"repo1": {"is_dirty": True}}

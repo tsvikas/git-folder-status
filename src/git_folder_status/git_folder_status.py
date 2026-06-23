@@ -8,6 +8,7 @@ Run `git-folder-status -h` for help.
 
 import sys
 from collections import ChainMap
+from dataclasses import dataclass
 from pathlib import Path
 
 from git import GitCommandError, InvalidGitRepositoryError, Repo
@@ -29,6 +30,43 @@ def shorten_list(items: list[str], limit: int = 10) -> list[str]:
 RepoStats = dict[
     str, "None | str | int | bool | list[str] | RepoStats | list[RepoStats]"
 ]
+
+# Stats that live in the shared object/ref store and are therefore identical
+# across every worktree of a repo. Everything else (dirty state, untracked
+# files, detached HEAD, submodules) is specific to one working tree.
+SHARED_REPO_KEYS = frozenset(
+    {
+        "stash_count",
+        "remotes",
+        "branches",
+        "branches_local_only",
+        "branches_upstream_unset",
+        "branches_upstream_gone",
+        "branches_out_of_sync",
+        "local_tags",
+        "tags_local_only",
+        "tags_mismatch",
+    }
+)
+
+
+@dataclass(frozen=True)
+class RepoIdentity:
+    """Identifies the repo a scanned folder belongs to.
+
+    `common_dir` is git's shared git dir (`--git-common-dir`): all worktrees of
+    one repo share it, so it is the key used to group them. `git_dir` is this
+    worktree's own git dir, which differs from `common_dir` only for a linked
+    worktree.
+    """
+
+    common_dir: Path
+    git_dir: Path
+
+    @property
+    def is_linked_worktree(self) -> bool:
+        """Whether this folder is a linked worktree rather than the main one."""
+        return self.common_dir != self.git_dir
 
 
 def repo_stats(repo: Repo) -> RepoStats:
@@ -265,12 +303,20 @@ def is_orphaned_worktree(folder: Path) -> bool:
 
 def issues_for_one_folder(
     folder: Path, *, slow: bool, include_all: bool, include_behind: bool
-) -> RepoStats:
-    """Return issues for a repos in a folder."""
+) -> tuple[RepoStats, RepoIdentity | None]:
+    """Return issues for a repo in a folder, plus its repo identity.
+
+    The identity is `None` when the folder is not a (readable) git repo. It is
+    used by the caller to group worktrees of the same repo together.
+    """
     try:
         with Repo(
             folder.resolve(), search_parent_directories=folder.is_symlink()
         ) as repo:
+            identity = RepoIdentity(
+                common_dir=Path(repo.common_dir).resolve(),
+                git_dir=Path(repo.git_dir).resolve(),
+            )
             repo_st = repo_issues_in_stats(repo, slow=slow, include_all=include_all)
             branches_st = repo_issues_in_branches(
                 repo,
@@ -286,7 +332,7 @@ def issues_for_one_folder(
                         slow=slow,
                         include_all=include_all,
                         include_behind=include_behind,
-                    )
+                    )[0]
                 )
                 for submodule in repo.submodules
             }
@@ -297,16 +343,102 @@ def issues_for_one_folder(
         assert isinstance(submodules_st, dict)  # noqa: S101
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
     except InvalidGitRepositoryError:
-        return {"is_git": False} if any(folder.glob("*")) else {}
+        return ({"is_git": False} if any(folder.glob("*")) else {}), None
     except GitCommandError as e:
         if is_orphaned_worktree(folder):
-            return {"error": "orphaned worktree"}
+            return {"error": "orphaned worktree"}, None
         stderr = (e.stderr or "").strip().strip("'\"") or str(e)
-        return {"error": f"git error: {stderr}"}
+        return {"error": f"git error: {stderr}"}, None
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:
-        return issues
+        return issues, identity
+
+
+def _relative_key(path: Path, basedir: Path) -> str:
+    """Format `path` as a key relative to `basedir`.
+
+    Falls back to a `../`-relative path (Python 3.12+) and finally an absolute
+    path for worktrees that live outside the scanned base directory.
+    """
+    try:
+        return path.relative_to(basedir).as_posix()
+    except ValueError:
+        pass
+    base, abs_path = basedir.resolve(), path.resolve()
+    if sys.version_info >= (3, 12):
+        # pylint: disable=unexpected-keyword-arg
+        try:
+            return abs_path.relative_to(base, walk_up=True).as_posix()
+        except ValueError:
+            pass
+    return abs_path.as_posix()
+
+
+def _split_shared_stats(stats: RepoStats) -> tuple[RepoStats, RepoStats]:
+    """Split stats into (shared repo-level, this-worktree-only) parts."""
+    shared = {k: v for k, v in stats.items() if k in SHARED_REPO_KEYS}
+    local = {k: v for k, v in stats.items() if k not in SHARED_REPO_KEYS}
+    return shared, local
+
+
+def _main_worktree_dir(common_dir: Path) -> Path:
+    """Derive the main worktree path from a repo's shared git dir.
+
+    For a normal repo the shared git dir is `<repo>/.git`, so the main worktree
+    is its parent. For a bare repo the shared git dir is the repo itself.
+    """
+    return common_dir.parent if common_dir.name == ".git" else common_dir
+
+
+def _group_worktrees(
+    issues_by_path: dict[Path, RepoStats],
+    identities: dict[Path, RepoIdentity],
+    basedir: Path,
+) -> dict[str, RepoStats]:
+    """Group linked worktrees of one repo under their main worktree.
+
+    All worktrees of a repo share one object/ref store, so repo-level state
+    (stash, branches, tags, remotes) is identical across them. That shared
+    state is reported once on the main worktree; each linked worktree's
+    working-tree-specific state is nested under a `worktrees` key. Folders that
+    are not git repos, and repos with no linked worktree in the scan, pass
+    through unchanged.
+    """
+    groups: dict[Path, list[Path]] = {}
+    for folder, identity in identities.items():
+        groups.setdefault(identity.common_dir, []).append(folder)
+
+    grouped: dict[str, RepoStats] = {}
+    for folder, stats in issues_by_path.items():
+        if folder not in identities:
+            grouped[_relative_key(folder, basedir)] = stats
+
+    for common_dir, folders in groups.items():
+        linked = [f for f in folders if identities[f].is_linked_worktree]
+        mains = [f for f in folders if not identities[f].is_linked_worktree]
+        if not linked:
+            for folder in folders:
+                grouped[_relative_key(folder, basedir)] = issues_by_path[folder]
+            continue
+        if mains:
+            main_folder = mains[0]
+            entry = dict(issues_by_path[main_folder])
+        else:
+            # the main worktree was not scanned: host the shared state here
+            main_folder = _main_worktree_dir(common_dir)
+            shared, _ = _split_shared_stats(issues_by_path[linked[0]])
+            entry = dict(shared)
+            entry["main_worktree_unscanned"] = True
+        worktrees = {
+            _relative_key(folder, basedir): _split_shared_stats(issues_by_path[folder])[
+                1
+            ]
+            for folder in linked
+        }
+        entry["worktrees"] = {k: worktrees[k] for k in sorted(worktrees)}
+        grouped[_relative_key(main_folder, basedir)] = entry
+    return grouped
 
 
 def _issues_for_all_subfolders(  # noqa: PLR0913
@@ -317,6 +449,7 @@ def _issues_for_all_subfolders(  # noqa: PLR0913
     slow: bool,
     include_all: bool,
     include_behind: bool,
+    identities: dict[Path, RepoIdentity],
 ) -> dict[Path, RepoStats]:
     exclude_dirs = exclude_dirs or []
     issues: dict[Path, RepoStats] = {}
@@ -331,7 +464,7 @@ def _issues_for_all_subfolders(  # noqa: PLR0913
                 continue
         if not folder.is_dir():
             continue
-        summary = issues_for_one_folder(
+        summary, identity = issues_for_one_folder(
             folder,
             slow=slow,
             include_all=include_all,
@@ -339,28 +472,57 @@ def _issues_for_all_subfolders(  # noqa: PLR0913
         )
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
+            if identity is not None:
+                identities[folder] = identity
         else:
-            subfolder_summary = _issues_for_all_subfolders(
-                folder,
-                recurse - 1,
-                exclude_dirs,
-                slow=slow,
-                include_all=include_all,
-                include_behind=include_behind,
+            issues.update(
+                _scan_nested_repos(
+                    folder,
+                    recurse,
+                    exclude_dirs,
+                    slow=slow,
+                    include_all=include_all,
+                    include_behind=include_behind,
+                    identities=identities,
+                )
             )
-            if any(st.get("is_git", True) for st in subfolder_summary.values()):
-                issues.update(subfolder_summary)
-                untracked_files = [
-                    p.name
-                    for p in folder.glob("*")
-                    if p.is_file() and p.name not in IGNORED_FILENAMES
-                ]
-                if untracked_files:
-                    issues[folder] = {"is_git": False}
-                    issues[folder]["untracked_files"] = shorten_list(untracked_files)
-            else:
-                issues[folder] = {"is_git": False}
     return issues
+
+
+def _scan_nested_repos(  # noqa: PLR0913
+    folder: Path,
+    recurse: int,
+    exclude_dirs: list[str],
+    *,
+    slow: bool,
+    include_all: bool,
+    include_behind: bool,
+    identities: dict[Path, RepoIdentity],
+) -> dict[Path, RepoStats]:
+    """Recurse into a non-repo folder and summarize the repos beneath it."""
+    subfolder_summary = _issues_for_all_subfolders(
+        folder,
+        recurse - 1,
+        exclude_dirs,
+        slow=slow,
+        include_all=include_all,
+        include_behind=include_behind,
+        identities=identities,
+    )
+    if not any(st.get("is_git", True) for st in subfolder_summary.values()):
+        return {folder: {"is_git": False}}
+    result: dict[Path, RepoStats] = dict(subfolder_summary)
+    untracked_files = [
+        p.name
+        for p in folder.glob("*")
+        if p.is_file() and p.name not in IGNORED_FILENAMES
+    ]
+    if untracked_files:
+        result[folder] = {
+            "is_git": False,
+            "untracked_files": shorten_list(untracked_files),
+        }
+    return result
 
 
 def issues_for_all_subfolders(  # noqa: PLR0913
@@ -394,12 +556,13 @@ def issues_for_all_subfolders(  # noqa: PLR0913
                 slow=slow,
                 include_all=include_all,
                 include_behind=include_behind,
-            )
+            )[0]
         }
     except InvalidGitRepositoryError:
         pass
 
     # otherwise we check all subfolders:
+    identities: dict[Path, RepoIdentity] = {}
     issues_by_path = _issues_for_all_subfolders(
         basedir,
         recurse,
@@ -407,8 +570,9 @@ def issues_for_all_subfolders(  # noqa: PLR0913
         slow=slow,
         include_all=include_all,
         include_behind=include_behind,
+        identities=identities,
     )
-    issues = {k.relative_to(basedir).as_posix(): v for k, v in issues_by_path.items()}
+    issues = _group_worktrees(issues_by_path, identities, basedir)
     # and we check the basedir itself:
     basedir_files = [
         p.name

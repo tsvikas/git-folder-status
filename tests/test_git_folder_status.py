@@ -4,11 +4,14 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
-from git import GitCommandError, Repo
+from git import Actor, GitCommandError, Repo
 
 from git_folder_status.git_folder_status import (
+    RepoIdentity,
     RepoStats,
     _filter_submodule_issues,
+    _relative_key,
+    _split_shared_stats,
     branch_status,
     is_file,
     is_orphaned_worktree,
@@ -569,29 +572,34 @@ class TestIssuesForOneFolder:
         # Create some files to make it non-empty
         (tmp_path / "file.txt").write_text("content")
 
-        result = issues_for_one_folder(
+        result, identity = issues_for_one_folder(
             tmp_path, slow=False, include_all=False, include_behind=False
         )
         assert result == {"is_git": False}
+        assert identity is None
 
     def test_empty_non_git_directory(self, tmp_path: Path) -> None:
         """Test handling of empty non-git directory."""
-        result = issues_for_one_folder(
+        result, identity = issues_for_one_folder(
             tmp_path, slow=False, include_all=False, include_behind=False
         )
         assert result == {}
+        assert identity is None
 
     def test_bare_repository(self, tmp_path: Path) -> None:
         """Test that a bare repo is analyzed without errors."""
         with Repo.init(tmp_path, bare=True):
             pass
 
-        result = issues_for_one_folder(
+        result, identity = issues_for_one_folder(
             tmp_path, slow=False, include_all=False, include_behind=False
         )
         assert result == {}
+        # a bare repo is its own common dir, so it is not a linked worktree
+        assert identity is not None
+        assert identity.is_linked_worktree is False
 
-        result = issues_for_one_folder(
+        result, _ = issues_for_one_folder(
             tmp_path, slow=False, include_all=True, include_behind=False
         )
         assert "error" not in result
@@ -603,10 +611,11 @@ class TestIssuesForOneFolder:
         (tmp_path / ".git").write_text("gitdir: /nonexistent/worktree/path\n")
         (tmp_path / "some_file.py").write_text("content")
 
-        result = issues_for_one_folder(
+        result, identity = issues_for_one_folder(
             tmp_path, slow=False, include_all=False, include_behind=False
         )
         assert result == {"error": "orphaned worktree"}
+        assert identity is None
 
     def test_repository_error_handling(self) -> None:
         """Test error handling for repository analysis."""
@@ -625,11 +634,12 @@ class TestIssuesForOneFolder:
             mock_repo_class.side_effect = GitCommandError(
                 "git status", 128, b"fatal: out of disk space"
             )
-            result = issues_for_one_folder(
+            result, identity = issues_for_one_folder(
                 tmp_path, slow=False, include_all=False, include_behind=False
             )
         assert "error" in result
         assert "out of disk space" in str(result["error"])
+        assert identity is None
 
 
 class TestIsOrphanedWorktree:
@@ -766,7 +776,7 @@ class TestIssuesForAllSubfolders:
             with patch(
                 "git_folder_status.git_folder_status.issues_for_one_folder"
             ) as mock_issues:
-                mock_issues.return_value = {"is_dirty": True}
+                mock_issues.return_value = ({"is_dirty": True}, None)
 
                 result = issues_for_all_subfolders(
                     tmp_path, recurse=1, slow=False, include_all=False
@@ -793,10 +803,10 @@ class TestIssuesForAllSubfolders:
             "git_folder_status.git_folder_status.issues_for_one_folder"
         ) as mock_issues:
 
-            def side_effect(folder: Path, **_kwargs: bool) -> RepoStats:
+            def side_effect(folder: Path, **_kwargs: bool) -> tuple[RepoStats, None]:
                 if folder.name == "git_repo":
-                    return {"is_dirty": True}
-                return {"is_git": False}
+                    return {"is_dirty": True}, None
+                return {"is_git": False}, None
 
             mock_issues.side_effect = side_effect
 
@@ -825,12 +835,12 @@ class TestIssuesForAllSubfolders:
             "git_folder_status.git_folder_status.issues_for_one_folder"
         ) as mock_issues:
 
-            def side_effect(folder: Path, **_kwargs: bool) -> RepoStats:
+            def side_effect(folder: Path, **_kwargs: bool) -> tuple[RepoStats, None]:
                 if folder.name == "parent":
-                    return {"is_git": False}
+                    return {"is_git": False}, None
                 if folder.name == "git_repo":
-                    return {"is_dirty": True}
-                return {}
+                    return {"is_dirty": True}, None
+                return {}, None
 
             mock_issues.side_effect = side_effect
 
@@ -870,7 +880,7 @@ class TestIssuesForAllSubfolders:
         with patch(
             "git_folder_status.git_folder_status.issues_for_one_folder"
         ) as mock_issues:
-            mock_issues.return_value = {"is_git": False}
+            mock_issues.return_value = ({"is_git": False}, None)
 
             result = issues_for_all_subfolders(
                 tmp_path, recurse=1, slow=False, include_all=False
@@ -879,3 +889,146 @@ class TestIssuesForAllSubfolders:
             # Should mark the empty directory as not git
             assert "empty_subdir" in result
             assert result["empty_subdir"]["is_git"] is False
+
+
+class TestRepoIdentity:
+    """Test RepoIdentity.is_linked_worktree."""
+
+    def test_main_worktree_not_linked(self) -> None:
+        """A repo whose git dir equals its common dir is the main worktree."""
+        git_dir = Path("/repo/.git")
+        identity = RepoIdentity(common_dir=git_dir, git_dir=git_dir)
+        assert identity.is_linked_worktree is False
+
+    def test_linked_worktree(self) -> None:
+        """A worktree with its own git dir under the common dir is linked."""
+        identity = RepoIdentity(
+            common_dir=Path("/repo/.git"),
+            git_dir=Path("/repo/.git/worktrees/wt"),
+        )
+        assert identity.is_linked_worktree is True
+
+
+class TestSplitSharedStats:
+    """Test _split_shared_stats."""
+
+    def test_splits_shared_from_local(self) -> None:
+        """Repo-level keys go to shared, working-tree keys stay local."""
+        stats: RepoStats = {
+            "stash_count": 1,
+            "branches_local_only": ["x"],
+            "is_dirty": True,
+            "untracked_files": ["a.txt"],
+        }
+        shared, local = _split_shared_stats(stats)
+        assert shared == {"stash_count": 1, "branches_local_only": ["x"]}
+        assert local == {"is_dirty": True, "untracked_files": ["a.txt"]}
+
+
+class TestRelativeKey:
+    """Test _relative_key."""
+
+    def test_under_basedir(self, tmp_path: Path) -> None:
+        """A path under the base dir becomes a plain relative key."""
+        assert _relative_key(tmp_path / "a" / "b", tmp_path) == "a/b"
+
+    def test_outside_basedir_mentions_target(self, tmp_path: Path) -> None:
+        """A path outside the base dir still produces a usable key."""
+        base = tmp_path / "scan"
+        base.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        key = _relative_key(outside, base)
+        assert "elsewhere" in key
+
+
+def _init_repo_with_commit(path: Path) -> Repo:
+    """Create a git repo with one commit, usable as a worktree base."""
+    actor = Actor("Test", "test@example.com")
+    repo = Repo.init(path)
+    (path / "README.md").write_text("init\n")
+    repo.index.add(["README.md"])
+    repo.index.commit("init", author=actor, committer=actor)
+    return repo
+
+
+class TestWorktreeGrouping:
+    """Test that worktrees of one repo are grouped under their main worktree."""
+
+    def test_linked_worktree_nested_under_main(self, tmp_path: Path) -> None:
+        """A linked worktree is nested, not reported as a sibling repo."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        (tmp_path / "repo" / "README.md").write_text("changed\n")
+        repo.git.stash("push", "-m", "wip")
+        repo.git.worktree("add", str(tmp_path / "repo-wt"), "-b", "wt-branch")
+        (tmp_path / "repo-wt" / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        # the linked worktree does not appear as its own top-level entry
+        assert "repo-wt" not in result
+        # it is nested under the main worktree instead
+        worktrees = result["repo"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert "repo-wt" in worktrees
+
+    def test_shared_state_reported_once_on_main(self, tmp_path: Path) -> None:
+        """Repo-level state lives on the main worktree, not the nested one."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        (tmp_path / "repo" / "README.md").write_text("changed\n")
+        repo.git.stash("push", "-m", "wip")
+        repo.git.worktree("add", str(tmp_path / "repo-wt"), "-b", "wt-branch")
+        (tmp_path / "repo-wt" / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        main = result["repo"]
+        worktrees = main["worktrees"]
+        assert isinstance(worktrees, dict)
+        nested = worktrees["repo-wt"]
+        assert isinstance(nested, dict)
+        # the stash is shared: it shows on main, never duplicated in the worktree
+        assert main["stash_count"] == 1
+        assert "stash_count" not in nested
+        # working-tree state is reported on the worktree itself
+        assert nested["untracked_files"] == ["dirty.txt"]
+
+    def test_worktrees_sorted_alphabetically(self, tmp_path: Path) -> None:
+        """Nested worktrees are ordered by name regardless of scan order."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        for name in ("repo-charlie", "repo-alpha", "repo-bravo"):
+            repo.git.worktree("add", str(tmp_path / name), "-b", f"b-{name}")
+            (tmp_path / name / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        worktrees = result["repo"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert list(worktrees) == ["repo-alpha", "repo-bravo", "repo-charlie"]
+
+    def test_plain_repo_not_nested(self, tmp_path: Path) -> None:
+        """A repo with no linked worktree stays flat (no worktrees key)."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        (tmp_path / "repo" / "README.md").write_text("changed\n")
+        repo.git.stash("push", "-m", "wip")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        assert "worktrees" not in result["repo"]
+        assert result["repo"]["stash_count"] == 1
+
+    def test_unscanned_main_is_marked(self, tmp_path: Path) -> None:
+        """When the main worktree is outside the scan, it is flagged."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        scan = tmp_path / "scan"
+        scan.mkdir()
+        repo.git.worktree("add", str(scan / "wt"), "-b", "wt-branch")
+        (scan / "wt" / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(scan, recurse=1)
+
+        # the main repo was not scanned, so it is hosted as an external entry
+        external = next(v for v in result.values() if v.get("main_worktree_unscanned"))
+        worktrees = external["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert "wt" in worktrees
