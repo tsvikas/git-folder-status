@@ -12,11 +12,28 @@ from .git_folder_status import RepoStats
 REPORT_FORMATS_TYPE = Literal["yaml", "report", "json", "pprint"]
 
 
+def _prune_clean_worktrees(stats: RepoStats) -> RepoStats:
+    """Drop linked worktrees that have no issues of their own.
+
+    A clean worktree carries an empty stats dict; it is only worth listing when
+    showing repos without issues (`include_ok`).
+    """
+    worktrees = stats.get("worktrees")
+    if not isinstance(worktrees, dict):
+        return stats
+    pruned: RepoStats = {k: v for k, v in worktrees.items() if v}
+    stats = {k: v for k, v in stats.items() if k != "worktrees"}
+    if pruned:
+        stats["worktrees"] = pruned
+    return stats
+
+
 def format_report(
     issues: dict[str, RepoStats], *, include_ok: bool, fmt: REPORT_FORMATS_TYPE
 ) -> str:
     """Format report to a readable output."""
     if not include_ok:
+        issues = {k: _prune_clean_worktrees(v) for k, v in issues.items()}
         issues = {k: v for k, v in issues.items() if v}
     try:
         return {
