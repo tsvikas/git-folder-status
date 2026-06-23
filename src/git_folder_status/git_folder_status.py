@@ -27,6 +27,16 @@ def shorten_list(items: list[str], limit: int = 10) -> list[str]:
     return short_list
 
 
+def shorten_dict(items: dict[str, str], limit: int = 10) -> dict[str, str]:
+    """Truncate a dict from the middle, mirroring `shorten_list`."""
+    if len(items) <= limit:
+        return items
+    entries = list(items.items())
+    kept = entries[: limit // 2] + entries[-limit // 2 :]
+    kept[limit // 2] = (f"<< {len(items) - limit + 1} more items >>", "")
+    return dict(kept)
+
+
 RepoStats = dict[
     str, "None | str | int | bool | list[str] | RepoStats | list[RepoStats]"
 ]
@@ -227,7 +237,7 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoSta
     issues: RepoStats = {}
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if include_all:
-        issues["local_tags"] = local_tags  # type: ignore[assignment]
+        issues["local_tags"] = shorten_dict(local_tags)  # type: ignore[assignment]
     if slow:
         remote_tags: ChainMap[str, str] = ChainMap(
             *(

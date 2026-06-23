@@ -22,6 +22,7 @@ from git_folder_status.git_folder_status import (
     repo_issues_in_stats,
     repo_issues_in_tags,
     repo_stats,
+    shorten_dict,
     shorten_list,
 )
 
@@ -50,6 +51,26 @@ class TestShortenList:
         items = [f"item{i}" for i in range(10)]
         result = shorten_list(items, limit=10)
         assert result == items
+
+
+class TestShortenDict:
+    """Test shorten_dict function."""
+
+    def test_short_dict_unchanged(self) -> None:
+        """A dict at or below the limit is returned unchanged."""
+        items = {f"k{i}": f"v{i}" for i in range(5)}
+        assert shorten_dict(items, limit=10) == items
+
+    def test_long_dict_truncated_from_middle(self) -> None:
+        """A long dict keeps the ends and inserts a count marker in the middle."""
+        items = {f"k{i}": f"v{i}" for i in range(20)}
+        result = shorten_dict(items, limit=10)
+        assert len(result) == 10
+        keys = list(result)
+        assert keys[:5] == ["k0", "k1", "k2", "k3", "k4"]
+        assert keys[5] == "<< 11 more items >>"
+        assert keys[-1] == "k19"
+        assert result["k0"] == "v0"
 
 
 class TestFilterSubmoduleIssues:
