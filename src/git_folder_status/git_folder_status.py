@@ -441,6 +441,70 @@ def _group_worktrees(
     return grouped
 
 
+def _list_worktree_paths(repo: Repo) -> list[Path]:
+    """Return the working-tree paths of every worktree of `repo`.
+
+    Parses `git worktree list --porcelain`. Bare entries have no working tree
+    and prunable entries point at a missing directory, so both are skipped.
+    """
+    out = repo.git.worktree("list", "--porcelain")
+    paths: list[Path] = []
+    current: Path | None = None
+    skip = False
+    for line in [*out.splitlines(), ""]:
+        if line.startswith("worktree "):
+            current = Path(line.removeprefix("worktree "))
+            skip = False
+        elif line == "bare" or line.startswith("prunable"):
+            skip = True
+        elif line == "" and current is not None:
+            if not skip:
+                paths.append(current)
+            current, skip = None, False
+    return paths
+
+
+def _discover_external_worktrees(
+    issues_by_path: dict[Path, RepoStats],
+    identities: dict[Path, RepoIdentity],
+    *,
+    slow: bool,
+    include_all: bool,
+    include_behind: bool,
+) -> None:
+    """Analyze worktrees that live outside the scanned tree, in place.
+
+    All worktrees of a repo share one worktree list, so for each repo found in
+    the scan we enumerate its worktrees and analyze any that were not already
+    scanned, wherever they live. `issues_by_path` and `identities` are mutated.
+    """
+    scanned = {path.resolve() for path in identities}
+    seen_common_dirs: set[Path] = set()
+    for folder, identity in list(identities.items()):
+        if identity.common_dir in seen_common_dirs:
+            continue
+        seen_common_dirs.add(identity.common_dir)
+        try:
+            with Repo(folder.resolve()) as repo:
+                worktree_paths = _list_worktree_paths(repo)
+        except (InvalidGitRepositoryError, GitCommandError):
+            continue
+        for wt_path in worktree_paths:
+            if wt_path.resolve() in scanned or not wt_path.is_dir():
+                continue
+            stats, wt_identity = issues_for_one_folder(
+                wt_path,
+                slow=slow,
+                include_all=include_all,
+                include_behind=include_behind,
+            )
+            if wt_identity is None:
+                continue
+            issues_by_path[wt_path] = stats
+            identities[wt_path] = wt_identity
+            scanned.add(wt_path.resolve())
+
+
 def _issues_for_all_subfolders(  # noqa: PLR0913
     basedir: Path,
     recurse: int,
@@ -533,6 +597,7 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     slow: bool = False,
     include_all: bool = False,
     include_behind: bool = False,
+    scan_external_worktrees: bool = False,
 ) -> dict[str, RepoStats]:
     """Return issues for all repos in a folder."""
     basedir = Path(basedir)
@@ -572,6 +637,14 @@ def issues_for_all_subfolders(  # noqa: PLR0913
         include_behind=include_behind,
         identities=identities,
     )
+    if scan_external_worktrees:
+        _discover_external_worktrees(
+            issues_by_path,
+            identities,
+            slow=slow,
+            include_all=include_all,
+            include_behind=include_behind,
+        )
     issues = _group_worktrees(issues_by_path, identities, basedir)
     # and we check the basedir itself:
     basedir_files = [

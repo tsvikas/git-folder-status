@@ -10,6 +10,7 @@ from git_folder_status.git_folder_status import (
     RepoIdentity,
     RepoStats,
     _filter_submodule_issues,
+    _list_worktree_paths,
     _relative_key,
     _split_shared_stats,
     branch_status,
@@ -942,6 +943,25 @@ class TestRelativeKey:
         assert "elsewhere" in key
 
 
+class TestListWorktreePaths:
+    """Test _list_worktree_paths porcelain parsing."""
+
+    def test_skips_bare_and_prunable(self) -> None:
+        """Bare entries (no work tree) and prunable entries are skipped."""
+        mock_repo = Mock(spec=Repo)
+        mock_repo.git.worktree.return_value = (
+            "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n"
+            "worktree /repo/.bare\nbare\n\n"
+            "worktree /repo/wt\nHEAD def\nbranch refs/heads/wt\n\n"
+            "worktree /repo/gone\nHEAD ghi\n"
+            "prunable gitdir file points to non-existent location\n"
+        )
+        assert _list_worktree_paths(mock_repo) == [
+            Path("/repo/main"),
+            Path("/repo/wt"),
+        ]
+
+
 def _init_repo_with_commit(path: Path) -> Repo:
     """Create a git repo with one commit, usable as a worktree base."""
     actor = Actor("Test", "test@example.com")
@@ -1032,3 +1052,30 @@ class TestWorktreeGrouping:
         worktrees = external["worktrees"]
         assert isinstance(worktrees, dict)
         assert "wt" in worktrees
+
+    def test_external_worktree_ignored_by_default(self, tmp_path: Path) -> None:
+        """A worktree outside the scan is not analyzed without the flag."""
+        repo = _init_repo_with_commit(tmp_path / "scan" / "repo")
+        repo.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "wt-branch")
+        (tmp_path / "outside-wt" / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(tmp_path / "scan", recurse=1)
+
+        assert "worktrees" not in result.get("repo", {})
+
+    def test_external_worktree_scanned_with_flag(self, tmp_path: Path) -> None:
+        """With the flag, a worktree outside the scan is analyzed and nested."""
+        repo = _init_repo_with_commit(tmp_path / "scan" / "repo")
+        repo.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "wt-branch")
+        (tmp_path / "outside-wt" / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(
+            tmp_path / "scan", recurse=1, scan_external_worktrees=True
+        )
+
+        worktrees = result["repo"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        # the external worktree is keyed by its path relative to the scan base
+        key = next(iter(worktrees))
+        assert key.endswith("outside-wt")
+        assert worktrees[key] == {"untracked_files": ["dirty.txt"]}
