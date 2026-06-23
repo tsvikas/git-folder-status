@@ -993,6 +993,19 @@ class TestWorktreeGrouping:
         # working-tree state is reported on the worktree itself
         assert nested["untracked_files"] == ["dirty.txt"]
 
+    def test_worktrees_sorted_alphabetically(self, tmp_path: Path) -> None:
+        """Nested worktrees are ordered by name regardless of scan order."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        for name in ("repo-charlie", "repo-alpha", "repo-bravo"):
+            repo.git.worktree("add", str(tmp_path / name), "-b", f"b-{name}")
+            (tmp_path / name / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        worktrees = result["repo"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert list(worktrees) == ["repo-alpha", "repo-bravo", "repo-charlie"]
+
     def test_plain_repo_not_nested(self, tmp_path: Path) -> None:
         """A repo with no linked worktree stays flat (no worktrees key)."""
         repo = _init_repo_with_commit(tmp_path / "repo")

@@ -430,12 +430,13 @@ def _group_worktrees(
             shared, _ = _split_shared_stats(issues_by_path[linked[0]])
             entry = dict(shared)
             entry["main_worktree_unscanned"] = True
-        entry["worktrees"] = {
+        worktrees = {
             _relative_key(folder, basedir): _split_shared_stats(issues_by_path[folder])[
                 1
             ]
             for folder in linked
         }
+        entry["worktrees"] = {k: worktrees[k] for k in sorted(worktrees)}
         grouped[_relative_key(main_folder, basedir)] = entry
     return grouped
 
