@@ -89,67 +89,58 @@ class TestFilterSubmoduleIssues:
     def test_removes_branches_only_behind(self) -> None:
         """Test that branches only behind remote are filtered out."""
         issues: RepoStats = {
-            "branches_out_of_sync": {
-                "main": {
-                    "remote_branch": "origin/main",
-                    "commits_behind": 5,
-                    "commits_ahead": 0,
-                },
+            "branches": {
+                "main": {"behind": 5},
             },
         }
         result = _filter_submodule_issues(issues)
-        # branches_out_of_sync should be removed entirely since no branches are ahead
-        assert "branches_out_of_sync" not in result
+        # branches should be removed entirely since no branch is ahead
+        assert "branches" not in result
 
     def test_keeps_branches_ahead(self) -> None:
         """Test that branches with commits ahead are kept."""
         issues: RepoStats = {
-            "branches_out_of_sync": {
-                "main": {
-                    "remote_branch": "origin/main",
-                    "commits_behind": 0,
-                    "commits_ahead": 2,
-                },
+            "branches": {
+                "main": {"ahead": 2},
             },
         }
         result = _filter_submodule_issues(issues)
-        assert "branches_out_of_sync" in result
-        assert "main" in result["branches_out_of_sync"]  # type: ignore[operator]
+        assert "branches" in result
+        assert "main" in result["branches"]  # type: ignore[operator]
 
     def test_keeps_branches_both_ahead_and_behind(self) -> None:
         """Test that branches both ahead and behind are kept."""
         issues: RepoStats = {
-            "branches_out_of_sync": {
-                "main": {
-                    "remote_branch": "origin/main",
-                    "commits_behind": 3,
-                    "commits_ahead": 2,
-                },
+            "branches": {
+                "main": {"ahead": 2, "behind": 3},
             },
         }
         result = _filter_submodule_issues(issues)
-        assert "branches_out_of_sync" in result
-        assert "main" in result["branches_out_of_sync"]  # type: ignore[operator]
+        assert "branches" in result
+        assert "main" in result["branches"]  # type: ignore[operator]
+
+    def test_keeps_branches_with_upstream_problem(self) -> None:
+        """Test that an upstream problem is kept even with no ahead commits."""
+        issues: RepoStats = {
+            "branches": {
+                "local": {"missing_upstream": True},
+                "stale": {"gone_upstream": "origin/stale"},
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        assert result["branches"] == issues["branches"]
 
     def test_filters_mixed_branches(self) -> None:
         """Test filtering when some branches are ahead and some only behind."""
         issues: RepoStats = {
-            "branches_out_of_sync": {
-                "main": {
-                    "remote_branch": "origin/main",
-                    "commits_behind": 4,
-                    "commits_ahead": 0,
-                },
-                "feature": {
-                    "remote_branch": "origin/feature",
-                    "commits_behind": 0,
-                    "commits_ahead": 1,
-                },
+            "branches": {
+                "main": {"behind": 4},
+                "feature": {"ahead": 1},
             },
         }
         result = _filter_submodule_issues(issues)
-        assert "branches_out_of_sync" in result
-        branches = result["branches_out_of_sync"]
+        assert "branches" in result
+        branches = result["branches"]
         assert isinstance(branches, dict)
         assert "main" not in branches  # Only behind, filtered out
         assert "feature" in branches  # Ahead, kept
@@ -160,19 +151,15 @@ class TestFilterSubmoduleIssues:
             "is_dirty": True,
             "untracked_files": ["file.txt"],
             "stash_count": 2,
-            "branches_out_of_sync": {
-                "main": {
-                    "remote_branch": "origin/main",
-                    "commits_behind": 4,
-                    "commits_ahead": 0,
-                },
+            "branches": {
+                "main": {"behind": 4},
             },
         }
         result = _filter_submodule_issues(issues)
         assert result["is_dirty"] is True
         assert result["untracked_files"] == ["file.txt"]
         assert result["stash_count"] == 2
-        assert "branches_out_of_sync" not in result
+        assert "branches" not in result
 
 
 class TestRepoStats:
@@ -318,22 +305,24 @@ class TestBranchStatus:
         mock_repo = Mock(spec=Repo)
         mock_repo.remotes = []
         mock_branch = Mock()
+        mock_branch.commit.hexsha = "abc123"
         mock_branch.tracking_branch.return_value = None
 
         result = branch_status(mock_repo, mock_branch)
-        assert result == {"remote_branch": False}
+        assert result == {"upstream": "missing", "head": "abc123"}
 
     def test_local_tracking_branch(self) -> None:
         """Test branch tracking a local branch."""
         mock_repo = Mock(spec=Repo)
         mock_repo.remotes = []
         mock_branch = Mock()
+        mock_branch.commit.hexsha = "abc123"
         mock_tracking = Mock()
         mock_tracking.name = ".local_branch"
         mock_branch.tracking_branch.return_value = mock_tracking
 
         result = branch_status(mock_repo, mock_branch)
-        assert result == {"remote_branch": False}
+        assert result == {"upstream": "missing", "head": "abc123"}
 
     @staticmethod
     def _repo_with_remote_refs(ref_names: list[str]) -> Mock:
@@ -354,14 +343,16 @@ class TestBranchStatus:
         mock_repo = self._repo_with_remote_refs(["origin/user/feature"])
         mock_branch = Mock()
         mock_branch.name = "feature"
+        mock_branch.commit.hexsha = "abc123"
         mock_branch.tracking_branch.return_value = None
 
         result = branch_status(mock_repo, mock_branch)
         assert result == {
-            "remote_branch": False,
-            "matching_remote_branch": "origin/user/feature",
-            "commits_behind": 0,
-            "commits_ahead": 0,
+            "upstream": "unset",
+            "remote_branch": "origin/user/feature",
+            "ahead": 0,
+            "behind": 0,
+            "head": "abc123",
         }
 
     def test_matching_remote_prefers_exact_name(self) -> None:
@@ -371,26 +362,29 @@ class TestBranchStatus:
         )
         mock_branch = Mock()
         mock_branch.name = "feature"
+        mock_branch.commit.hexsha = "abc123"
         mock_branch.tracking_branch.return_value = None
 
         result = branch_status(mock_repo, mock_branch)
-        assert result["matching_remote_branch"] == "origin/feature"
+        assert result["remote_branch"] == "origin/feature"
 
     def test_matching_remote_requires_full_name_component(self) -> None:
         """Test that `origin/other-feature` does not match a local `feature`."""
         mock_repo = self._repo_with_remote_refs(["origin/other-feature"])
         mock_branch = Mock()
         mock_branch.name = "feature"
+        mock_branch.commit.hexsha = "abc123"
         mock_branch.tracking_branch.return_value = None
 
         result = branch_status(mock_repo, mock_branch)
-        assert result == {"remote_branch": False}
+        assert result == {"upstream": "missing", "head": "abc123"}
 
     def test_missing_remote_branch(self) -> None:
         """Test branch tracking a missing remote branch."""
         mock_repo = Mock(spec=Repo)
         mock_branch = Mock()
         mock_branch.name = "feature"
+        mock_branch.commit.hexsha = "abc123"
         mock_tracking = Mock()
         mock_tracking.name = "origin/feature"
         mock_branch.tracking_branch.return_value = mock_tracking
@@ -399,8 +393,9 @@ class TestBranchStatus:
 
         result = branch_status(mock_repo, mock_branch)
         assert result == {
+            "upstream": "gone",
             "remote_branch": "origin/feature",
-            "remote_branch_exists": False,
+            "head": "abc123",
         }
 
 
@@ -416,18 +411,19 @@ class TestRepoIssuesInBranches:
         ) as mock_all_branches:
             mock_all_branches.return_value = {
                 "main": {
+                    "upstream": "set",
                     "remote_branch": "origin/main",
-                    "commits_ahead": 0,
-                    "commits_behind": 0,
+                    "ahead": 0,
+                    "behind": 0,
                 },
-                "feature": {"remote_branch": False},
+                "feature": {"upstream": "missing"},
             }
 
             result = repo_issues_in_branches(
                 mock_repo, slow=False, include_all=False, include_behind=False
             )
 
-            assert result["branches_local_only"] == ["feature"]
+            assert result["branches"] == {"feature": {"missing_upstream": True}}
 
     def test_branches_upstream_unset(self) -> None:
         """Test that pushed-but-untracked branches get their own category."""
@@ -438,24 +434,26 @@ class TestRepoIssuesInBranches:
         ) as mock_all_branches:
             mock_all_branches.return_value = {
                 "feature": {
-                    "remote_branch": False,
-                    "matching_remote_branch": "origin/user/feature",
-                    "commits_behind": 0,
-                    "commits_ahead": 2,
+                    "upstream": "unset",
+                    "remote_branch": "origin/user/feature",
+                    "behind": 0,
+                    "ahead": 2,
                 },
-                "local-only": {"remote_branch": False},
+                "local-only": {"upstream": "missing"},
             }
 
             result = repo_issues_in_branches(
                 mock_repo, slow=False, include_all=False, include_behind=False
             )
 
-            assert result["branches_local_only"] == ["local-only"]
-            assert result["branches_upstream_unset"] == {
+            assert result["branches"] == {
                 "feature": {
-                    "matching_remote_branch": "origin/user/feature",
-                    "commits_ahead": 2,
+                    "unset_upstream": {
+                        "candidate": "origin/user/feature",
+                        "ahead": 2,
+                    },
                 },
+                "local-only": {"missing_upstream": True},
             }
 
     def test_include_all_branches(self) -> None:
@@ -467,10 +465,11 @@ class TestRepoIssuesInBranches:
         ) as mock_all_branches:
             mock_all_branches.return_value = {
                 "main": {
+                    "upstream": "set",
                     "remote_branch": "origin/main",
-                    "commits_ahead": 0,
-                    "commits_behind": 0,
-                    "remote_branch_exists": True,
+                    "ahead": 0,
+                    "behind": 0,
+                    "head": "abc123",
                 },
             }
 
@@ -478,7 +477,73 @@ class TestRepoIssuesInBranches:
                 mock_repo, slow=False, include_all=True, include_behind=False
             )
 
-            assert "branches" in result
+            assert result["branches"] == {
+                "main": {"remote_branch": "origin/main", "head": "abc123"},
+            }
+
+    def test_include_all_local_only_branch(self) -> None:
+        """A local-only branch under --all reports its head but no remote."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "wip": {"upstream": "missing", "head": "abc123"},
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=True, include_behind=False
+            )
+
+            assert result["branches"] == {
+                "wip": {"missing_upstream": True, "head": "abc123"},
+            }
+
+    def test_branches_upstream_gone(self) -> None:
+        """A configured upstream whose ref was deleted is reported as gone."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "stale": {"upstream": "gone", "remote_branch": "origin/stale"},
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=False
+            )
+
+            assert result["branches"] == {
+                "stale": {"gone_upstream": "origin/stale"},
+            }
+
+    def test_unset_upstream_keeps_behind_in_candidate(self) -> None:
+        """An unset branch behind its candidate keeps that count scoped inside."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "feature": {
+                    "upstream": "unset",
+                    "remote_branch": "origin/feature",
+                    "ahead": 0,
+                    "behind": 3,
+                },
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=False
+            )
+
+            assert result["branches"] == {
+                "feature": {
+                    "unset_upstream": {"candidate": "origin/feature", "behind": 3},
+                },
+            }
 
     def test_include_behind_false_filters_behind_only(self) -> None:
         """Test that include_behind=False filters branches only behind."""
@@ -489,16 +554,16 @@ class TestRepoIssuesInBranches:
         ) as mock_all_branches:
             mock_all_branches.return_value = {
                 "main": {
+                    "upstream": "set",
                     "remote_branch": "origin/main",
-                    "commits_ahead": 0,
-                    "commits_behind": 5,
-                    "remote_branch_exists": True,
+                    "ahead": 0,
+                    "behind": 5,
                 },
                 "feature": {
+                    "upstream": "set",
                     "remote_branch": "origin/feature",
-                    "commits_ahead": 2,
-                    "commits_behind": 0,
-                    "remote_branch_exists": True,
+                    "ahead": 2,
+                    "behind": 0,
                 },
             }
 
@@ -508,11 +573,10 @@ class TestRepoIssuesInBranches:
 
             # main is only behind (needs pull) - should be filtered out
             # feature is ahead - should be included
-            assert "branches_out_of_sync" in result
-            branches_out_of_sync = result["branches_out_of_sync"]
-            assert isinstance(branches_out_of_sync, dict)
-            assert "main" not in branches_out_of_sync
-            assert "feature" in branches_out_of_sync
+            branches = result["branches"]
+            assert isinstance(branches, dict)
+            assert "main" not in branches
+            assert branches["feature"] == {"ahead": 2}
 
     def test_include_behind_true_includes_behind_only(self) -> None:
         """Test that include_behind=True includes branches only behind."""
@@ -523,16 +587,16 @@ class TestRepoIssuesInBranches:
         ) as mock_all_branches:
             mock_all_branches.return_value = {
                 "main": {
+                    "upstream": "set",
                     "remote_branch": "origin/main",
-                    "commits_ahead": 0,
-                    "commits_behind": 5,
-                    "remote_branch_exists": True,
+                    "ahead": 0,
+                    "behind": 5,
                 },
                 "feature": {
+                    "upstream": "set",
                     "remote_branch": "origin/feature",
-                    "commits_ahead": 2,
-                    "commits_behind": 0,
-                    "remote_branch_exists": True,
+                    "ahead": 2,
+                    "behind": 0,
                 },
             }
 
@@ -541,11 +605,10 @@ class TestRepoIssuesInBranches:
             )
 
             # Both branches should be included with include_behind=True
-            assert "branches_out_of_sync" in result
-            branches_out_of_sync = result["branches_out_of_sync"]
-            assert isinstance(branches_out_of_sync, dict)
-            assert "main" in branches_out_of_sync
-            assert "feature" in branches_out_of_sync
+            branches = result["branches"]
+            assert isinstance(branches, dict)
+            assert branches["main"] == {"behind": 5}
+            assert branches["feature"] == {"ahead": 2}
 
 
 class TestRepoIssuesInTags:
@@ -938,12 +1001,15 @@ class TestSplitSharedStats:
         """Repo-level keys go to shared, working-tree keys stay local."""
         stats: RepoStats = {
             "stash_count": 1,
-            "branches_local_only": ["x"],
+            "branches": {"x": {"missing_upstream": True}},
             "is_dirty": True,
             "untracked_files": ["a.txt"],
         }
         shared, local = _split_shared_stats(stats)
-        assert shared == {"stash_count": 1, "branches_local_only": ["x"]}
+        assert shared == {
+            "stash_count": 1,
+            "branches": {"x": {"missing_upstream": True}},
+        }
         assert local == {"is_dirty": True, "untracked_files": ["a.txt"]}
 
 

@@ -49,10 +49,6 @@ SHARED_REPO_KEYS = frozenset(
         "stash_count",
         "remotes",
         "branches",
-        "branches_local_only",
-        "branches_upstream_unset",
-        "branches_upstream_gone",
-        "branches_out_of_sync",
         "local_tags",
         "tags_local_only",
         "tags_mismatch",
@@ -98,7 +94,6 @@ def repo_stats(repo: Repo) -> RepoStats:
         "is_detached_head": head.is_detached,
         "active_branch": None if head.is_detached else repo.active_branch.name,
         "head_commit_hash_short": commit.hexsha[:7] if commit else None,
-        "branches": {b.name: b.commit.hexsha for b in repo.branches},
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
         "stash_count": 0 if bare else len(repo.git.stash("list").splitlines()),
     }
@@ -146,40 +141,107 @@ def _matching_remote_branch(repo: Repo, branch: Head) -> RemoteReference | None:
     return (exact or candidates)[0]
 
 
+def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
+    """Return (ahead, behind): commits on `local` not on `remote`, and vice versa."""
+    behind = len(list(repo.iter_commits(f"{local}..{remote}")))
+    ahead = len(list(repo.iter_commits(f"{remote}..{local}")))
+    return ahead, behind
+
+
 def branch_status(repo: Repo, branch: Head) -> RepoStats:
-    """Return stats for a branch."""
+    """Return the upstream relationship of a single branch.
+
+    The `upstream` field discriminates four mutually exclusive states:
+
+    - `set`: a real upstream is configured and its remote ref exists.
+    - `unset`: no upstream configured, but a remote branch matches by name
+      (typically pushed without `-u`).
+      Its ahead/behind counts are measured against that name-matched
+      *candidate*, so they are only a guess.
+    - `gone`: an upstream is configured but its remote ref no longer exists.
+    - `missing`: local-only, no upstream and no matching remote branch.
+    """
+    head = branch.commit.hexsha
     tracking_branch = branch.tracking_branch()
     # a tracking name starting with "." means tracking a local branch
     if tracking_branch is None or tracking_branch.name[0] == ".":
         # no upstream configured, but the branch may still exist on a remote
         matching = _matching_remote_branch(repo, branch)
         if matching is None:
-            return {"remote_branch": False}
-        commits_behind = repo.iter_commits(f"{branch.name}..{matching.name}")
-        commits_ahead = repo.iter_commits(f"{matching.name}..{branch.name}")
+            return {"upstream": "missing", "head": head}
+        ahead, behind = _ahead_behind(repo, branch.name, matching.name)
         return {
-            "remote_branch": False,
-            "matching_remote_branch": matching.name,
-            "commits_behind": len(list(commits_behind)),
-            "commits_ahead": len(list(commits_ahead)),
+            "upstream": "unset",
+            "remote_branch": matching.name,
+            "ahead": ahead,
+            "behind": behind,
+            "head": head,
         }
-    local_branch = branch.name
     remote_branch = tracking_branch.name
     if remote_branch not in repo.refs:
-        return {"remote_branch": remote_branch, "remote_branch_exists": False}
-    commits_behind = repo.iter_commits(f"{local_branch}..{remote_branch}")
-    commits_ahead = repo.iter_commits(f"{remote_branch}..{local_branch}")
+        return {"upstream": "gone", "remote_branch": remote_branch, "head": head}
+    ahead, behind = _ahead_behind(repo, branch.name, remote_branch)
     return {
+        "upstream": "set",
         "remote_branch": remote_branch,
-        "commits_behind": len(list(commits_behind)),
-        "commits_ahead": len(list(commits_ahead)),
+        "ahead": ahead,
+        "behind": behind,
+        "head": head,
     }
 
 
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
-    """Return stats for all branches in a repo."""
+    """Return the upstream status of all branches in a repo."""
     branches = [b for b in repo.branches if not b.name.startswith("gitbutler/")]
     return {branch.name: branch_status(repo, branch) for branch in branches}
+
+
+def _branch_has_issue(status: RepoStats, *, include_behind: bool) -> bool:
+    """Whether a branch's upstream status is worth reporting."""
+    # any non-`set` upstream state (missing / unset / gone) is itself the issue
+    if status["upstream"] != "set":
+        return True
+    if status.get("ahead"):
+        return True
+    return bool(include_behind and status.get("behind"))
+
+
+def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
+    """Shape a branch's upstream status for the report.
+
+    A clean, in-sync branch yields `{}`, so the report's generic "drop falsy"
+    pass removes it with no special case: every key present marks a real
+    deviation. The `--all` view re-adds `remote_branch`/`head` so even clean
+    branches stay non-empty and are listed.
+    """
+    upstream = status["upstream"]
+    record: RepoStats = {}
+    if upstream == "missing":
+        record["missing_upstream"] = True
+    elif upstream == "gone":
+        record["gone_upstream"] = status["remote_branch"]
+    elif upstream == "unset":
+        # the candidate is matched by name, not configured, so its ahead/behind
+        # are provisional: keep them scoped inside this block, never at the top
+        # level where counts mean "vs the real upstream".
+        candidate: RepoStats = {"candidate": status["remote_branch"]}
+        if status.get("ahead"):
+            candidate["ahead"] = status["ahead"]
+        if status.get("behind"):
+            candidate["behind"] = status["behind"]
+        record["unset_upstream"] = candidate
+    else:  # set: ahead/behind are measured against the real configured upstream
+        if status.get("ahead"):
+            record["ahead"] = status["ahead"]
+        if status.get("behind"):
+            record["behind"] = status["behind"]
+    # remote_branch and head are context, not issue triggers: attach them only
+    # under --all, so they never keep a clean branch in the regular report.
+    if include_all:
+        if status.get("remote_branch"):
+            record["remote_branch"] = status["remote_branch"]
+        record["head"] = status.get("head")
+    return record
 
 
 def repo_issues_in_branches(
@@ -189,47 +251,17 @@ def repo_issues_in_branches(
     include_all: bool,
     include_behind: bool,
 ) -> RepoStats:
-    """Return issues for all branches in a repo."""
+    """Return per-branch upstream issues, keyed under `branches`."""
     branches_st = all_branches_status(repo)
-    issues: RepoStats = {}
-    issues["branches_local_only"] = [
-        k
-        for k, v in branches_st.items()
-        if not v.get("remote_branch", False) and not v.get("matching_remote_branch")
-    ]
-    # pushed without `-u`: the remote branch exists but no upstream is set
-    issues["branches_upstream_unset"] = {
-        k: {kk: vv for kk, vv in v.items() if kk != "remote_branch" and vv}
-        for k, v in branches_st.items()
-        if not v.get("remote_branch", False) and v.get("matching_remote_branch")
-    }
-    # upstream is configured but its ref no longer exists (git's "gone" state)
-    issues["branches_upstream_gone"] = {
-        k: v["remote_branch"]
-        for k, v in branches_st.items()
-        if v["remote_branch"] and not v.get("remote_branch_exists", True)
-    }
-    issues["branches_out_of_sync"] = {
-        k: v
-        for k, v in branches_st.items()
-        if v["remote_branch"]
-        and v.get("remote_branch_exists", True)
-        and (
-            (v["commits_behind"] or v["commits_ahead"])
-            if include_behind
-            else v["commits_ahead"]
-        )
-    }
-    if include_all:
-        issues["branches"] = {
-            k: {kk: vv for kk, vv in v.items() if vv}
-            for k, v in branches_st.items()
-            if v["remote_branch"]
-            and v.get("remote_branch_exists", True)
-            and not (v["commits_behind"] or v["commits_ahead"])
-        }
-    issues = {k: v for k, v in issues.items() if v}
-    return issues
+    branches: RepoStats = {}
+    for name, status in branches_st.items():
+        if not include_all and not _branch_has_issue(
+            status, include_behind=include_behind
+        ):
+            continue
+        # the predicate above (or include_all) guarantees a non-empty record
+        branches[name] = _branch_record(status, include_all=include_all)
+    return {"branches": branches} if branches else {}
 
 
 def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
@@ -270,6 +302,16 @@ def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoSta
     return issues
 
 
+def _is_branch_behind_only(record: RepoStats) -> bool:
+    """Whether a branch's only divergence is being behind its upstream.
+
+    For submodules such a branch is not worth reporting (see below), whereas
+    unpushed (`ahead`) commits and any upstream problem still are.
+    """
+    issue_keys = {"ahead", "missing_upstream", "unset_upstream", "gone_upstream"}
+    return "behind" in record and not (issue_keys & record.keys())
+
+
 def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
     """Filter issues that aren't relevant for submodules.
 
@@ -277,19 +319,17 @@ def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
     is expected. We only care about branches that are ahead (unpushed commits).
     """
     filtered = {k: v for k, v in issues.items() if k != "is_detached_head"}
-    if "branches_out_of_sync" in filtered:
-        branches = filtered["branches_out_of_sync"]
-        assert isinstance(branches, dict)  # noqa: S101
-        # Only keep branches that have commits ahead (unpushed local commits)
-        filtered["branches_out_of_sync"] = {
-            branch: status
-            for branch, status in branches.items()
-            if isinstance(status, dict)
-            and isinstance(commits_ahead := status.get("commits_ahead"), int)
-            and commits_ahead > 0
+    branches = filtered.get("branches")
+    if isinstance(branches, dict):
+        kept: RepoStats = {
+            branch: record
+            for branch, record in branches.items()
+            if isinstance(record, dict) and not _is_branch_behind_only(record)
         }
-        if not filtered["branches_out_of_sync"]:
-            del filtered["branches_out_of_sync"]
+        if kept:
+            filtered["branches"] = kept
+        else:
+            del filtered["branches"]
     return filtered
 
 

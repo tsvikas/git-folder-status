@@ -7,17 +7,9 @@ report = {
     "my-repo": RepoStats({"is_dirty": True}),
     "my-other-repo": RepoStats(
         {
-            "branches_out_of_sync": {
-                "main": {
-                    "remote_branch": "origin/main",
-                    "commits_behind": 0,
-                    "commits_ahead": 1,
-                },
-                "develop": {
-                    "remote_branch": "origin/develop",
-                    "commits_behind": 1,
-                    "commits_ahead": 3,
-                },
+            "branches": {
+                "main": {"ahead": 1},
+                "develop": {"ahead": 3, "behind": 1},
             }
         }
     ),
