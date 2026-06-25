@@ -103,4 +103,4 @@ This project is based on `tsvikas/python-template` v0.19.1. Core configuration i
 ### Performance Considerations
 
 - Aim for quick Git code. Use `--slow` only if no other option works
-- The code uses async to parallelize
+- The scan is sequential: keep per-repo work cheap and avoid extra Git subprocess calls
