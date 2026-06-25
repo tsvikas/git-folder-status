@@ -190,10 +190,47 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
     }
 
 
+def _worktree_branches(repo: Repo) -> dict[str, str]:
+    """Map each checked-out branch name to the worktree path that holds it.
+
+    Parses `git worktree list --porcelain`. Git allows a branch to be checked
+    out in at most one worktree, so the mapping is unambiguous. Bare, detached,
+    and prunable worktrees have no usable branch line and are skipped.
+    """
+    out = repo.git.worktree("list", "--porcelain")
+    branches: dict[str, str] = {}
+    current: Path | None = None
+    skip = False
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line.removeprefix("worktree "))
+            skip = False
+        elif line == "bare" or line.startswith("prunable"):
+            skip = True
+        elif line.startswith("branch ") and current is not None and not skip:
+            name = line.removeprefix("branch ").removeprefix("refs/heads/")
+            branches[name] = current.resolve().as_posix()
+    return branches
+
+
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
-    """Return the upstream status of all branches in a repo."""
+    """Return the upstream status of all branches in a repo.
+
+    Each branch that is checked out in a worktree carries a `worktree` field
+    holding that worktree's path, so a diverged branch can be located.
+    """
     branches = [b for b in repo.branches if not b.name.startswith("gitbutler/")]
-    return {branch.name: branch_status(repo, branch) for branch in branches}
+    if not branches:
+        return {}
+    checkouts = _worktree_branches(repo)
+    result: dict[str, RepoStats] = {}
+    for branch in branches:
+        status = branch_status(repo, branch)
+        worktree = checkouts.get(branch.name)
+        if worktree is not None:
+            status["worktree"] = worktree
+        result[branch.name] = status
+    return result
 
 
 def _branch_has_issue(status: RepoStats, *, include_behind: bool) -> bool:
@@ -260,7 +297,13 @@ def repo_issues_in_branches(
         ):
             continue
         # the predicate above (or include_all) guarantees a non-empty record
-        branches[name] = _branch_record(status, include_all=include_all)
+        record = _branch_record(status, include_all=include_all)
+        # name the worktree that has this branch checked out, so an unpushed or
+        # diverged branch can be located. Only a reported (non-empty) record
+        # reaches here, so a clean in-sync branch is never annotated.
+        if status.get("worktree"):
+            record["worktree"] = status["worktree"]
+        branches[name] = record
     return {"branches": branches} if branches else {}
 
 
@@ -423,6 +466,25 @@ def _relative_key(path: Path, basedir: Path) -> str:
         except ValueError:
             pass
     return abs_path.as_posix()
+
+
+def _relativize_worktree_paths(stats: RepoStats, basedir: Path) -> None:
+    """Rewrite absolute `worktree` paths in `stats` as keys relative to `basedir`.
+
+    `all_branches_status` records each branch's worktree as an absolute path.
+    Rewriting it against the scanned base mirrors the keys used for the grouped
+    `worktrees` entries, so the two can be cross-referenced. Mutates in place,
+    recursing through nested branch / submodule / worktree records.
+    """
+    for key, value in stats.items():
+        if key == "worktree" and isinstance(value, str):
+            stats[key] = _relative_key(Path(value), basedir)
+        elif isinstance(value, dict):
+            _relativize_worktree_paths(value, basedir)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _relativize_worktree_paths(item, basedir)
 
 
 def _split_shared_stats(stats: RepoStats) -> tuple[RepoStats, RepoStats]:
@@ -655,6 +717,9 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     try:
         with Repo(basedir, search_parent_directories=True) as repo:
             working_tree_dir = repo.working_tree_dir
+    except InvalidGitRepositoryError:
+        pass
+    else:
         assert working_tree_dir is not None  # noqa: S101
         basedir_working_dir = Path(working_tree_dir)
         if sys.version_info >= (3, 12):
@@ -665,7 +730,7 @@ def issues_for_all_subfolders(  # noqa: PLR0913
         else:
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
-        return {
+        single = {
             from_basedir: issues_for_one_folder(
                 basedir_working_dir,
                 slow=slow,
@@ -673,8 +738,9 @@ def issues_for_all_subfolders(  # noqa: PLR0913
                 include_behind=include_behind,
             )[0]
         }
-    except InvalidGitRepositoryError:
-        pass
+        for stats in single.values():
+            _relativize_worktree_paths(stats, basedir)
+        return single
 
     # otherwise we check all subfolders:
     identities: dict[Path, RepoIdentity] = {}
@@ -696,6 +762,8 @@ def issues_for_all_subfolders(  # noqa: PLR0913
             include_behind=include_behind,
         )
     issues = _group_worktrees(issues_by_path, identities, basedir)
+    for stats in issues.values():
+        _relativize_worktree_paths(stats, basedir)
     # and we check the basedir itself:
     basedir_files = [
         p.name

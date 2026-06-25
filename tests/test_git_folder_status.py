@@ -13,6 +13,7 @@ from git_folder_status.git_folder_status import (
     _list_worktree_paths,
     _relative_key,
     _split_shared_stats,
+    _worktree_branches,
     branch_status,
     is_file,
     is_orphaned_worktree,
@@ -610,6 +611,69 @@ class TestRepoIssuesInBranches:
             assert branches["main"] == {"behind": 5}
             assert branches["feature"] == {"ahead": 2}
 
+    def test_worktree_attached_to_reported_branch(self) -> None:
+        """A branch checked out in a worktree names it, but only if it has an issue."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "feature": {
+                    "upstream": "set",
+                    "remote_branch": "origin/feature",
+                    "ahead": 2,
+                    "behind": 0,
+                    "worktree": "/repo/feature-wt",
+                },
+                # clean and in-sync: not reported, so its worktree is not named
+                "main": {
+                    "upstream": "set",
+                    "remote_branch": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "worktree": "/repo/main",
+                },
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=False, include_behind=False
+            )
+
+            branches = result["branches"]
+            assert isinstance(branches, dict)
+            assert branches == {"feature": {"ahead": 2, "worktree": "/repo/feature-wt"}}
+
+    def test_worktree_attached_under_include_all(self) -> None:
+        """Under --all, even a clean checked-out branch names its worktree."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "main": {
+                    "upstream": "set",
+                    "remote_branch": "origin/main",
+                    "ahead": 0,
+                    "behind": 0,
+                    "head": "abc123",
+                    "worktree": "/repo/main",
+                },
+            }
+
+            result = repo_issues_in_branches(
+                mock_repo, slow=False, include_all=True, include_behind=False
+            )
+
+            branches = result["branches"]
+            assert isinstance(branches, dict)
+            assert branches["main"] == {
+                "remote_branch": "origin/main",
+                "head": "abc123",
+                "worktree": "/repo/main",
+            }
+
 
 class TestRepoIssuesInTags:
     """Test repo_issues_in_tags function."""
@@ -1049,6 +1113,27 @@ class TestListWorktreePaths:
         ]
 
 
+class TestWorktreeBranches:
+    """Test _worktree_branches porcelain parsing."""
+
+    def test_maps_branches_skipping_unusable_entries(self) -> None:
+        """Each branch maps to its worktree; bare/detached/prunable are skipped."""
+        mock_repo = Mock(spec=Repo)
+        mock_repo.git.worktree.return_value = (
+            "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n"
+            "worktree /repo/.bare\nbare\n\n"
+            "worktree /repo/feat\nHEAD def\nbranch refs/heads/refactor/dotbot\n\n"
+            "worktree /repo/detached\nHEAD ghi\ndetached\n\n"
+            "worktree /repo/gone\nHEAD jkl\n"
+            "prunable gitdir file points to non-existent location\n"
+            "branch refs/heads/stale\n"
+        )
+        assert _worktree_branches(mock_repo) == {
+            "main": "/repo/main",
+            "refactor/dotbot": "/repo/feat",
+        }
+
+
 def _init_repo_with_commit(path: Path) -> Repo:
     """Create a git repo with one commit, usable as a worktree base."""
     actor = Actor("Test", "test@example.com")
@@ -1139,6 +1224,27 @@ class TestWorktreeGrouping:
         worktrees = external["worktrees"]
         assert isinstance(worktrees, dict)
         assert "wt" in worktrees
+
+    def test_branch_names_its_worktree_relative_to_scan(self, tmp_path: Path) -> None:
+        """A diverged branch names the worktree holding it, keyed like the report."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        repo.git.worktree("add", str(tmp_path / "repo-wt"), "-b", "wt-branch")
+        # an unpushed commit on the branch checked out in the linked worktree
+        wt = Repo(tmp_path / "repo-wt")
+        (tmp_path / "repo-wt" / "f.txt").write_text("x")
+        wt.index.add(["f.txt"])
+        wt.index.commit(
+            "work", author=wt.head.commit.author, committer=wt.head.commit.author
+        )
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        branches = result["repo"]["branches"]
+        assert isinstance(branches, dict)
+        wt_branch = branches["wt-branch"]
+        assert isinstance(wt_branch, dict)
+        # the worktree key matches how the worktree itself is keyed in the report
+        assert wt_branch["worktree"] == "repo-wt"
 
     def test_external_worktree_ignored_by_default(self, tmp_path: Path) -> None:
         """A worktree outside the scan is not analyzed without the flag."""
