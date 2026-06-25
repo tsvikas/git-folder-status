@@ -9,6 +9,7 @@ from git import Actor, GitCommandError, Repo
 from git_folder_status.git_folder_status import (
     RepoIdentity,
     RepoStats,
+    ScanOptions,
     _filter_submodule_issues,
     _list_worktree_paths,
     _relative_key,
@@ -269,7 +270,7 @@ class TestRepoIssuesInStats:
                 "active_branch": "main",
             }
 
-            result = repo_issues_in_stats(mock_repo, slow=False, include_all=False)
+            result = repo_issues_in_stats(mock_repo, ScanOptions())
 
             # Only non-zero/non-empty values should be returned
             expected = {
@@ -292,7 +293,7 @@ class TestRepoIssuesInStats:
                 "branches": {"main": "abc123"},
             }
 
-            result = repo_issues_in_stats(mock_repo, slow=False, include_all=True)
+            result = repo_issues_in_stats(mock_repo, ScanOptions(include_all=True))
 
             # With include_all=True, should include more fields
             assert "branches" in result
@@ -420,9 +421,7 @@ class TestRepoIssuesInBranches:
                 "feature": {"upstream": "missing"},
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             assert result["branches"] == {"feature": {"missing_upstream": True}}
 
@@ -443,9 +442,7 @@ class TestRepoIssuesInBranches:
                 "local-only": {"upstream": "missing"},
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             assert result["branches"] == {
                 "feature": {
@@ -474,9 +471,7 @@ class TestRepoIssuesInBranches:
                 },
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=True, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
 
             assert result["branches"] == {
                 "main": {"remote_branch": "origin/main", "head": "abc123"},
@@ -493,9 +488,7 @@ class TestRepoIssuesInBranches:
                 "wip": {"upstream": "missing", "head": "abc123"},
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=True, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
 
             assert result["branches"] == {
                 "wip": {"missing_upstream": True, "head": "abc123"},
@@ -512,9 +505,7 @@ class TestRepoIssuesInBranches:
                 "stale": {"upstream": "gone", "remote_branch": "origin/stale"},
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             assert result["branches"] == {
                 "stale": {"gone_upstream": "origin/stale"},
@@ -536,9 +527,7 @@ class TestRepoIssuesInBranches:
                 },
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             assert result["branches"] == {
                 "feature": {
@@ -568,9 +557,7 @@ class TestRepoIssuesInBranches:
                 },
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             # main is only behind (needs pull) - should be filtered out
             # feature is ahead - should be included
@@ -602,7 +589,7 @@ class TestRepoIssuesInBranches:
             }
 
             result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=True
+                mock_repo, ScanOptions(include_behind=True)
             )
 
             # Both branches should be included with include_behind=True
@@ -636,9 +623,7 @@ class TestRepoIssuesInBranches:
                 },
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=False, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             branches = result["branches"]
             assert isinstance(branches, dict)
@@ -662,9 +647,7 @@ class TestRepoIssuesInBranches:
                 },
             }
 
-            result = repo_issues_in_branches(
-                mock_repo, slow=False, include_all=True, include_behind=False
-            )
+            result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
 
             branches = result["branches"]
             assert isinstance(branches, dict)
@@ -686,7 +669,7 @@ class TestRepoIssuesInTags:
         mock_tag.commit.hexsha = "abc123"
         mock_repo.tags = [mock_tag]
 
-        result = repo_issues_in_tags(mock_repo, slow=False, include_all=True)
+        result = repo_issues_in_tags(mock_repo, ScanOptions(include_all=True))
 
         assert result["local_tags"] == {"refs/tags/v1.0.0": "abc123"}
 
@@ -707,7 +690,7 @@ class TestRepoIssuesInTags:
             "def456\trefs/tags/v1.0.0^{}\ndef456\trefs/tags/v1.0.0"
         )
 
-        result = repo_issues_in_tags(mock_repo, slow=True, include_all=False)
+        result = repo_issues_in_tags(mock_repo, ScanOptions(slow=True))
 
         # Should detect mismatch between local and remote tags
         assert "tags_mismatch" in result
@@ -721,17 +704,13 @@ class TestIssuesForOneFolder:
         # Create some files to make it non-empty
         (tmp_path / "file.txt").write_text("content")
 
-        result, identity = issues_for_one_folder(
-            tmp_path, slow=False, include_all=False, include_behind=False
-        )
+        result, identity = issues_for_one_folder(tmp_path, ScanOptions())
         assert result == {"is_git": False}
         assert identity is None
 
     def test_empty_non_git_directory(self, tmp_path: Path) -> None:
         """Test handling of empty non-git directory."""
-        result, identity = issues_for_one_folder(
-            tmp_path, slow=False, include_all=False, include_behind=False
-        )
+        result, identity = issues_for_one_folder(tmp_path, ScanOptions())
         assert result == {}
         assert identity is None
 
@@ -740,17 +719,13 @@ class TestIssuesForOneFolder:
         with Repo.init(tmp_path, bare=True):
             pass
 
-        result, identity = issues_for_one_folder(
-            tmp_path, slow=False, include_all=False, include_behind=False
-        )
+        result, identity = issues_for_one_folder(tmp_path, ScanOptions())
         assert result == {}
         # a bare repo is its own common dir, so it is not a linked worktree
         assert identity is not None
         assert identity.is_linked_worktree is False
 
-        result, _ = issues_for_one_folder(
-            tmp_path, slow=False, include_all=True, include_behind=False
-        )
+        result, _ = issues_for_one_folder(tmp_path, ScanOptions(include_all=True))
         assert "error" not in result
         assert result["bare"] is True
 
@@ -760,9 +735,7 @@ class TestIssuesForOneFolder:
         (tmp_path / ".git").write_text("gitdir: /nonexistent/worktree/path\n")
         (tmp_path / "some_file.py").write_text("content")
 
-        result, identity = issues_for_one_folder(
-            tmp_path, slow=False, include_all=False, include_behind=False
-        )
+        result, identity = issues_for_one_folder(tmp_path, ScanOptions())
         assert result == {"error": "orphaned worktree"}
         assert identity is None
 
@@ -771,9 +744,7 @@ class TestIssuesForOneFolder:
         folder = Path("/nonexistent")
 
         with pytest.raises(RuntimeError, match="Error while analyzing repo"):
-            issues_for_one_folder(
-                folder, slow=False, include_all=False, include_behind=False
-            )
+            issues_for_one_folder(folder, ScanOptions())
 
     def test_git_command_error_non_orphaned(self, tmp_path: Path) -> None:
         """Test GitCommandError on a folder that is not an orphaned worktree."""
@@ -783,9 +754,7 @@ class TestIssuesForOneFolder:
             mock_repo_class.side_effect = GitCommandError(
                 "git status", 128, b"fatal: out of disk space"
             )
-            result, identity = issues_for_one_folder(
-                tmp_path, slow=False, include_all=False, include_behind=False
-            )
+            result, identity = issues_for_one_folder(tmp_path, ScanOptions())
         assert "error" in result
         assert "out of disk space" in str(result["error"])
         assert identity is None
@@ -952,7 +921,9 @@ class TestIssuesForAllSubfolders:
             "git_folder_status.git_folder_status.issues_for_one_folder"
         ) as mock_issues:
 
-            def side_effect(folder: Path, **_kwargs: bool) -> tuple[RepoStats, None]:
+            def side_effect(
+                folder: Path, _options: ScanOptions
+            ) -> tuple[RepoStats, None]:
                 if folder.name == "git_repo":
                     return {"is_dirty": True}, None
                 return {"is_git": False}, None
@@ -984,7 +955,9 @@ class TestIssuesForAllSubfolders:
             "git_folder_status.git_folder_status.issues_for_one_folder"
         ) as mock_issues:
 
-            def side_effect(folder: Path, **_kwargs: bool) -> tuple[RepoStats, None]:
+            def side_effect(
+                folder: Path, _options: ScanOptions
+            ) -> tuple[RepoStats, None]:
                 if folder.name == "parent":
                     return {"is_git": False}, None
                 if folder.name == "git_repo":

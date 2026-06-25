@@ -58,6 +58,20 @@ SHARED_REPO_KEYS = frozenset(
 
 
 @dataclass(frozen=True)
+class ScanOptions:
+    """Flags controlling how each repo is analyzed, threaded through the scan.
+
+    `slow` allows expensive operations (remote tag comparison). `include_all`
+    reports context beyond issues. `include_behind` keeps branches that are
+    only behind their upstream.
+    """
+
+    slow: bool = False
+    include_all: bool = False
+    include_behind: bool = False
+
+
+@dataclass(frozen=True)
 class RepoIdentity:
     """Identifies the repo a scanned folder belongs to.
 
@@ -100,12 +114,7 @@ def repo_stats(repo: Repo) -> RepoStats:
     }
 
 
-def repo_issues_in_stats(
-    repo: Repo,
-    *,
-    slow: bool,  # noqa: ARG001
-    include_all: bool,
-) -> RepoStats:
+def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
     """Return issues in a repo."""
     stats_to_include = {
         "is_dirty",
@@ -114,7 +123,7 @@ def repo_issues_in_stats(
         "is_detached_head",
     }
     issues = repo_stats(repo)
-    if not include_all:
+    if not options.include_all:
         issues = {k: v for k, v in issues.items() if k in stats_to_include}
     issues = {k: v for k, v in issues.items() if v}
     return issues
@@ -298,23 +307,17 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
     return record
 
 
-def repo_issues_in_branches(
-    repo: Repo,
-    *,
-    slow: bool,  # noqa: ARG001
-    include_all: bool,
-    include_behind: bool,
-) -> RepoStats:
+def repo_issues_in_branches(repo: Repo, options: ScanOptions) -> RepoStats:
     """Return per-branch upstream issues, keyed under `branches`."""
     branches_st = all_branches_status(repo)
     branches: RepoStats = {}
     for name, status in branches_st.items():
-        if not include_all and not _branch_has_issue(
-            status, include_behind=include_behind
+        if not options.include_all and not _branch_has_issue(
+            status, include_behind=options.include_behind
         ):
             continue
         # the predicate above (or include_all) guarantees a non-empty record
-        record = _branch_record(status, include_all=include_all)
+        record = _branch_record(status, include_all=options.include_all)
         # name the worktree that has this branch checked out, so an unpushed or
         # diverged branch can be located. Only a reported (non-empty) record
         # reaches here, so a clean in-sync branch is never annotated.
@@ -324,13 +327,13 @@ def repo_issues_in_branches(
     return {"branches": branches} if branches else {}
 
 
-def repo_issues_in_tags(repo: Repo, *, slow: bool, include_all: bool) -> RepoStats:
+def repo_issues_in_tags(repo: Repo, options: ScanOptions) -> RepoStats:
     """Return issues for all tags in a repo."""
     issues: RepoStats = {}
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
-    if include_all:
+    if options.include_all:
         issues["local_tags"] = shorten_dict(local_tags)  # type: ignore[assignment]
-    if slow:
+    if options.slow:
         remote_tags: ChainMap[str, str] = ChainMap(
             *(
                 dict(
@@ -412,7 +415,7 @@ def is_orphaned_worktree(folder: Path) -> bool:
 
 
 def issues_for_one_folder(
-    folder: Path, *, slow: bool, include_all: bool, include_behind: bool
+    folder: Path, options: ScanOptions
 ) -> tuple[RepoStats, RepoIdentity | None]:
     """Return issues for a repo in a folder, plus its repo identity.
 
@@ -427,22 +430,12 @@ def issues_for_one_folder(
                 common_dir=Path(repo.common_dir).resolve(),
                 git_dir=Path(repo.git_dir).resolve(),
             )
-            repo_st = repo_issues_in_stats(repo, slow=slow, include_all=include_all)
-            branches_st = repo_issues_in_branches(
-                repo,
-                slow=slow,
-                include_all=include_all,
-                include_behind=include_behind,
-            )
-            tags_st = repo_issues_in_tags(repo, slow=slow, include_all=include_all)
+            repo_st = repo_issues_in_stats(repo, options)
+            branches_st = repo_issues_in_branches(repo, options)
+            tags_st = repo_issues_in_tags(repo, options)
             submodules_st = {
                 f"/{submodule.path}": _filter_submodule_issues(
-                    issues_for_one_folder(
-                        Path(submodule.abspath),
-                        slow=slow,
-                        include_all=include_all,
-                        include_behind=include_behind,
-                    )[0]
+                    issues_for_one_folder(Path(submodule.abspath), options)[0]
                 )
                 for submodule in repo.submodules
             }
@@ -578,10 +571,7 @@ def _list_worktree_paths(repo: Repo) -> list[Path]:
 def _discover_external_worktrees(
     issues_by_path: dict[Path, RepoStats],
     identities: dict[Path, RepoIdentity],
-    *,
-    slow: bool,
-    include_all: bool,
-    include_behind: bool,
+    options: ScanOptions,
 ) -> None:
     """Analyze worktrees that live outside the scanned tree, in place.
 
@@ -603,12 +593,7 @@ def _discover_external_worktrees(
         for wt_path in worktree_paths:
             if wt_path.resolve() in scanned or not wt_path.is_dir():
                 continue
-            stats, wt_identity = issues_for_one_folder(
-                wt_path,
-                slow=slow,
-                include_all=include_all,
-                include_behind=include_behind,
-            )
+            stats, wt_identity = issues_for_one_folder(wt_path, options)
             if wt_identity is None:
                 continue
             issues_by_path[wt_path] = stats
@@ -616,14 +601,12 @@ def _discover_external_worktrees(
             scanned.add(wt_path.resolve())
 
 
-def _issues_for_all_subfolders(  # noqa: PLR0913
+def _issues_for_all_subfolders(
     basedir: Path,
     recurse: int,
     exclude_dirs: list[str] | None = None,
     *,
-    slow: bool,
-    include_all: bool,
-    include_behind: bool,
+    options: ScanOptions,
     identities: dict[Path, RepoIdentity],
 ) -> dict[Path, RepoStats]:
     exclude_dirs = exclude_dirs or []
@@ -639,12 +622,7 @@ def _issues_for_all_subfolders(  # noqa: PLR0913
                 continue
         if not folder.is_dir():
             continue
-        summary, identity = issues_for_one_folder(
-            folder,
-            slow=slow,
-            include_all=include_all,
-            include_behind=include_behind,
-        )
+        summary, identity = issues_for_one_folder(folder, options)
         if summary.get("is_git", True) or recurse <= 0:
             issues[folder] = summary
             if identity is not None:
@@ -655,23 +633,19 @@ def _issues_for_all_subfolders(  # noqa: PLR0913
                     folder,
                     recurse,
                     exclude_dirs,
-                    slow=slow,
-                    include_all=include_all,
-                    include_behind=include_behind,
+                    options=options,
                     identities=identities,
                 )
             )
     return issues
 
 
-def _scan_nested_repos(  # noqa: PLR0913
+def _scan_nested_repos(
     folder: Path,
     recurse: int,
     exclude_dirs: list[str],
     *,
-    slow: bool,
-    include_all: bool,
-    include_behind: bool,
+    options: ScanOptions,
     identities: dict[Path, RepoIdentity],
 ) -> dict[Path, RepoStats]:
     """Recurse into a non-repo folder and summarize the repos beneath it."""
@@ -679,9 +653,7 @@ def _scan_nested_repos(  # noqa: PLR0913
         folder,
         recurse - 1,
         exclude_dirs,
-        slow=slow,
-        include_all=include_all,
-        include_behind=include_behind,
+        options=options,
         identities=identities,
     )
     if not any(st.get("is_git", True) for st in subfolder_summary.values()):
@@ -712,6 +684,9 @@ def issues_for_all_subfolders(  # noqa: PLR0913
 ) -> dict[str, RepoStats]:
     """Return issues for all repos in a folder."""
     basedir = Path(basedir)
+    options = ScanOptions(
+        slow=slow, include_all=include_all, include_behind=include_behind
+    )
     # if we are in a git repo, we only check this repo:
     try:
         with Repo(basedir, search_parent_directories=True) as repo:
@@ -729,14 +704,7 @@ def issues_for_all_subfolders(  # noqa: PLR0913
         else:
             # walk_up is not supported in python < 3.12
             from_basedir = "<this repos>"
-        single = {
-            from_basedir: issues_for_one_folder(
-                basedir_working_dir,
-                slow=slow,
-                include_all=include_all,
-                include_behind=include_behind,
-            )[0]
-        }
+        single = {from_basedir: issues_for_one_folder(basedir_working_dir, options)[0]}
         for stats in single.values():
             _relativize_worktree_paths(stats, basedir)
         return single
@@ -747,19 +715,11 @@ def issues_for_all_subfolders(  # noqa: PLR0913
         basedir,
         recurse,
         exclude_dirs,
-        slow=slow,
-        include_all=include_all,
-        include_behind=include_behind,
+        options=options,
         identities=identities,
     )
     if scan_external_worktrees:
-        _discover_external_worktrees(
-            issues_by_path,
-            identities,
-            slow=slow,
-            include_all=include_all,
-            include_behind=include_behind,
-        )
+        _discover_external_worktrees(issues_by_path, identities, options)
     issues = _group_worktrees(issues_by_path, identities, basedir)
     for stats in issues.values():
         _relativize_worktree_paths(stats, basedir)
