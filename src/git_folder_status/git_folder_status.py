@@ -8,6 +8,7 @@ Run `git-folder-status -h` for help.
 
 import sys
 from collections import ChainMap
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -190,27 +191,43 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
     }
 
 
+def _iter_worktrees(repo: Repo) -> Iterator[tuple[Path, str | None]]:
+    """Yield `(path, branch)` for each usable worktree of `repo`.
+
+    Parses `git worktree list --porcelain`. `branch` is the checked-out branch
+    name, or `None` for a detached HEAD. Bare entries (no working tree) and
+    prunable entries (pointing at a missing directory) are skipped. The trailing
+    empty string flushes the final record, which has no blank line after it.
+    """
+    out = repo.git.worktree("list", "--porcelain")
+    path: Path | None = None
+    branch: str | None = None
+    skip = False
+    for line in [*out.splitlines(), ""]:
+        if line.startswith("worktree "):
+            path = Path(line.removeprefix("worktree "))
+            branch, skip = None, False
+        elif line == "bare" or line.startswith("prunable"):
+            skip = True
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch ").removeprefix("refs/heads/")
+        elif line == "" and path is not None:
+            if not skip:
+                yield path, branch
+            path, branch, skip = None, None, False
+
+
 def _worktree_branches(repo: Repo) -> dict[str, str]:
     """Map each checked-out branch name to the worktree path that holds it.
 
-    Parses `git worktree list --porcelain`. Git allows a branch to be checked
-    out in at most one worktree, so the mapping is unambiguous. Bare, detached,
-    and prunable worktrees have no usable branch line and are skipped.
+    Git allows a branch to be checked out in at most one worktree, so the
+    mapping is unambiguous. Detached worktrees have no branch and are omitted.
     """
-    out = repo.git.worktree("list", "--porcelain")
-    branches: dict[str, str] = {}
-    current: Path | None = None
-    skip = False
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            current = Path(line.removeprefix("worktree "))
-            skip = False
-        elif line == "bare" or line.startswith("prunable"):
-            skip = True
-        elif line.startswith("branch ") and current is not None and not skip:
-            name = line.removeprefix("branch ").removeprefix("refs/heads/")
-            branches[name] = current.resolve().as_posix()
-    return branches
+    return {
+        branch: path.resolve().as_posix()
+        for path, branch in _iter_worktrees(repo)
+        if branch is not None
+    }
 
 
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
@@ -554,26 +571,8 @@ def _group_worktrees(
 
 
 def _list_worktree_paths(repo: Repo) -> list[Path]:
-    """Return the working-tree paths of every worktree of `repo`.
-
-    Parses `git worktree list --porcelain`. Bare entries have no working tree
-    and prunable entries point at a missing directory, so both are skipped.
-    """
-    out = repo.git.worktree("list", "--porcelain")
-    paths: list[Path] = []
-    current: Path | None = None
-    skip = False
-    for line in [*out.splitlines(), ""]:
-        if line.startswith("worktree "):
-            current = Path(line.removeprefix("worktree "))
-            skip = False
-        elif line == "bare" or line.startswith("prunable"):
-            skip = True
-        elif line == "" and current is not None:
-            if not skip:
-                paths.append(current)
-            current, skip = None, False
-    return paths
+    """Return the working-tree path of every usable worktree of `repo`."""
+    return [path for path, _ in _iter_worktrees(repo)]
 
 
 def _discover_external_worktrees(
