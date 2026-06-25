@@ -1101,9 +1101,11 @@ class TestWorktreeBranches:
             "prunable gitdir file points to non-existent location\n"
             "branch refs/heads/stale\n"
         )
+        # values are `path.resolve().as_posix()`; resolve mirrors the code so the
+        # expectation holds on Windows too, where resolve prepends a drive letter
         assert _worktree_branches(mock_repo) == {
-            "main": "/repo/main",
-            "refactor/dotbot": "/repo/feat",
+            "main": Path("/repo/main").resolve().as_posix(),
+            "refactor/dotbot": Path("/repo/feat").resolve().as_posix(),
         }
 
 
