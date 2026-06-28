@@ -242,18 +242,21 @@ def _worktree_branches(repo: Repo) -> dict[str, str]:
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     """Return the upstream status of all branches in a repo.
 
-    Each branch that is checked out in a worktree carries a `worktree` field
-    holding that worktree's path, so a diverged branch can be located.
+    A branch checked out in some *other* worktree carries a `worktree` field
+    holding that worktree's path, so a diverged branch can be located. A branch
+    checked out in `repo` itself gets no such field: the path would only echo
+    the repo being reported on, so it is redundant.
     """
     branches = [b for b in repo.branches if not b.name.startswith("gitbutler/")]
     if not branches:
         return {}
     checkouts = _worktree_branches(repo)
+    own = Path(repo.working_dir).resolve().as_posix() if repo.working_dir else None
     result: dict[str, RepoStats] = {}
     for branch in branches:
         status = branch_status(repo, branch)
         worktree = checkouts.get(branch.name)
-        if worktree is not None:
+        if worktree is not None and worktree != own:
             status["worktree"] = worktree
         result[branch.name] = status
     return result

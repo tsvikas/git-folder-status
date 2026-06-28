@@ -1221,6 +1221,25 @@ class TestWorktreeGrouping:
         # the worktree key matches how the worktree itself is keyed in the report
         assert wt_branch["worktree"] == "repo-wt"
 
+    def test_branch_in_own_worktree_omits_self(self, tmp_path: Path) -> None:
+        """A branch checked out in the reported repo names no worktree."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        repo.git.worktree("add", str(tmp_path / "repo-wt"), "-b", "wt-branch")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        branches = result["repo"]["branches"]
+        assert isinstance(branches, dict)
+        # the default branch lives in "repo" itself: the path would only echo the
+        # entry's own key, so no worktree is named
+        own_branch = branches[repo.active_branch.name]
+        assert isinstance(own_branch, dict)
+        assert "worktree" not in own_branch
+        # the linked worktree's branch still names its (other) worktree
+        wt_branch = branches["wt-branch"]
+        assert isinstance(wt_branch, dict)
+        assert wt_branch["worktree"] == "repo-wt"
+
     def test_external_worktree_ignored_by_default(self, tmp_path: Path) -> None:
         """A worktree outside the scan is not analyzed without the flag."""
         repo = _init_repo_with_commit(tmp_path / "scan" / "repo")
