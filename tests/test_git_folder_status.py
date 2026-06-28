@@ -125,8 +125,8 @@ class TestFilterSubmoduleIssues:
         """Test that an upstream problem is kept even with no ahead commits."""
         issues: RepoStats = {
             "branches": {
-                "local": {"missing_upstream": True},
-                "stale": {"gone_upstream": "origin/stale"},
+                "local": {"no_remote": True},
+                "stale": {"remote_deleted": "origin/stale"},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -423,7 +423,7 @@ class TestRepoIssuesInBranches:
 
             result = repo_issues_in_branches(mock_repo, ScanOptions())
 
-            assert result["branches"] == {"feature": {"missing_upstream": True}}
+            assert result["branches"] == {"feature": {"no_remote": True}}
 
     def test_branches_upstream_unset(self) -> None:
         """Test that pushed-but-untracked branches get their own category."""
@@ -446,12 +446,12 @@ class TestRepoIssuesInBranches:
 
             assert result["branches"] == {
                 "feature": {
-                    "unset_upstream": {
+                    "remote_not_tracked": {
                         "candidate": "origin/user/feature",
                         "ahead": 2,
                     },
                 },
-                "local-only": {"missing_upstream": True},
+                "local-only": {"no_remote": True},
             }
 
     def test_include_all_branches(self) -> None:
@@ -491,7 +491,7 @@ class TestRepoIssuesInBranches:
             result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
 
             assert result["branches"] == {
-                "wip": {"missing_upstream": True, "head": "abc123"},
+                "wip": {"no_remote": True, "head": "abc123"},
             }
 
     def test_branches_upstream_gone(self) -> None:
@@ -508,10 +508,10 @@ class TestRepoIssuesInBranches:
             result = repo_issues_in_branches(mock_repo, ScanOptions())
 
             assert result["branches"] == {
-                "stale": {"gone_upstream": "origin/stale"},
+                "stale": {"remote_deleted": "origin/stale"},
             }
 
-    def test_unset_upstream_keeps_behind_in_candidate(self) -> None:
+    def test_remote_not_tracked_keeps_behind_in_candidate(self) -> None:
         """An unset branch behind its candidate keeps that count scoped inside."""
         mock_repo = Mock(spec=Repo)
 
@@ -531,7 +531,7 @@ class TestRepoIssuesInBranches:
 
             assert result["branches"] == {
                 "feature": {
-                    "unset_upstream": {"candidate": "origin/feature", "behind": 3},
+                    "remote_not_tracked": {"candidate": "origin/feature", "behind": 3},
                 },
             }
 
@@ -1038,14 +1038,14 @@ class TestSplitSharedStats:
         """Repo-level keys go to shared, working-tree keys stay local."""
         stats: RepoStats = {
             "stash_count": 1,
-            "branches": {"x": {"missing_upstream": True}},
+            "branches": {"x": {"no_remote": True}},
             "is_dirty": True,
             "untracked_files": ["a.txt"],
         }
         shared, local = _split_shared_stats(stats)
         assert shared == {
             "stash_count": 1,
-            "branches": {"x": {"missing_upstream": True}},
+            "branches": {"x": {"no_remote": True}},
         }
         assert local == {"is_dirty": True, "untracked_files": ["a.txt"]}
 

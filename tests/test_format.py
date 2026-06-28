@@ -59,7 +59,7 @@ class TestFormatReport:
         """Clean worktrees are dropped, and an entry left empty disappears."""
         issues: dict[str, RepoStats] = {
             "with-issue": {
-                "branches": {"x": {"missing_upstream": True}},
+                "branches": {"x": {"no_remote": True}},
                 "worktrees": {"wt-clean": {}, "wt-dirty": {"is_dirty": True}},
             },
             "only-clean-worktree": {"worktrees": {"wt-clean": {}}},

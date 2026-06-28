@@ -283,9 +283,9 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
     upstream = status["upstream"]
     record: RepoStats = {}
     if upstream == "missing":
-        record["missing_upstream"] = True
+        record["no_remote"] = True
     elif upstream == "gone":
-        record["gone_upstream"] = status["remote_branch"]
+        record["remote_deleted"] = status["remote_branch"]
     elif upstream == "unset":
         # the candidate is matched by name, not configured, so its ahead/behind
         # are provisional: keep them scoped inside this block, never at the top
@@ -295,7 +295,7 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
             candidate["ahead"] = status["ahead"]
         if status.get("behind"):
             candidate["behind"] = status["behind"]
-        record["unset_upstream"] = candidate
+        record["remote_not_tracked"] = candidate
     else:  # set: ahead/behind are measured against the real configured upstream
         if status.get("ahead"):
             record["ahead"] = status["ahead"]
@@ -374,7 +374,7 @@ def _is_branch_behind_only(record: RepoStats) -> bool:
     For submodules such a branch is not worth reporting (see below), whereas
     unpushed (`ahead`) commits and any upstream problem still are.
     """
-    issue_keys = {"ahead", "missing_upstream", "unset_upstream", "gone_upstream"}
+    issue_keys = {"ahead", "no_remote", "remote_not_tracked", "remote_deleted"}
     return "behind" in record and not (issue_keys & record.keys())
 
 
