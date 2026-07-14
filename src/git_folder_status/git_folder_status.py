@@ -330,6 +330,20 @@ def repo_issues_in_branches(repo: Repo, options: ScanOptions) -> RepoStats:
     return {"branches": branches} if branches else {}
 
 
+def _remote_tags(repo: Repo, remote_name: str) -> dict[str, str]:
+    """Map each tag ref to its commit sha, as reported by `git ls-remote`."""
+    # ls_remote's typed overload widens the result to str | bytes | tuple | ...;
+    # the plain (no with_extended_output) call always yields str.
+    out = repo.git.ls_remote("--tags", remote_name)
+    if not isinstance(out, str):
+        raise TypeError(f"unexpected ls-remote output type: {type(out).__name__}")
+    tags: dict[str, str] = {}
+    for line in out.splitlines():
+        sha, ref = line.split("\t")
+        tags[ref] = sha
+    return tags
+
+
 def repo_issues_in_tags(repo: Repo, options: ScanOptions) -> RepoStats:
     """Return issues for all tags in a repo."""
     issues: RepoStats = {}
@@ -338,17 +352,7 @@ def repo_issues_in_tags(repo: Repo, options: ScanOptions) -> RepoStats:
         issues["local_tags"] = shorten_dict(local_tags)  # type: ignore[assignment]
     if options.slow:
         remote_tags: ChainMap[str, str] = ChainMap(
-            *(
-                dict(
-                    [
-                        line.split("\t")[::-1]
-                        for line in repo.git.ls_remote(
-                            "--tags", remote_name
-                        ).splitlines()
-                    ]
-                )
-                for remote_name in repo.remotes
-            )
+            *(_remote_tags(repo, remote.name) for remote in repo.remotes)
         )
         remote_tags2: dict[str, str] = {
             k.removesuffix("^{}"): v
