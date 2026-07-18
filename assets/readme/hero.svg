@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="360" viewBox="0 0 1200 360"
+     role="img" aria-labelledby="title desc">
+  <title id="title">git-folder-status</title>
+  <desc id="desc">A folder tree of Git repositories, each tagged with the state that keeps it from being safely pushed: dirty, ahead 1, stash 1, no remote, clean.</desc>
+
+  <rect width="1200" height="360" rx="26" fill="#0d1117"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="358.5" rx="25.25" fill="none" stroke="#21262d" stroke-width="1.5"/>
+
+  <g id="title-block" transform="translate(56 56)">
+    <text x="0" y="8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="12" letter-spacing="2.4" fill="#8b949e">CLI · GIT HYGIENE</text>
+
+    <text x="0" y="64" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="46" font-weight="700" fill="#e6edf3">git-folder-status</text>
+
+    <text x="0" y="110" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+          font-size="19" fill="#c9d1d9">Scans a directory tree and reports every Git repo</text>
+    <text x="0" y="138" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+          font-size="19" fill="#c9d1d9">that is not fully synced with its remote.</text>
+
+    <rect x="0" y="176" width="520" height="48" rx="12" fill="#010409" stroke="#21262d" stroke-width="1.5"/>
+    <text x="18" y="206" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="17" fill="#8b949e">$</text>
+    <text x="38" y="206" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="17" fill="#e6edf3">git-folder-status ~/code</text>
+
+    <text x="0" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="13" fill="#6e7681">Python 3.10+ · MIT · one command instead of one git status per repo</text>
+  </g>
+
+  <g id="project-proof" transform="translate(672 72)">
+    <text x="0" y="0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="17" fill="#8b949e">~/code</text>
+
+    <path d="M10 14 V 217" fill="none" stroke="#30363d" stroke-width="1.5"/>
+    <path d="M10 41 H 26 M10 85 H 26 M10 129 H 26 M10 173 H 26 M10 217 H 26"
+          fill="none" stroke="#30363d" stroke-width="1.5"/>
+
+    <g id="row-dirty">
+      <text x="36" y="46" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="17" fill="#e6edf3">my-repo</text>
+      <rect x="400" y="29" width="60" height="24" rx="9" fill="#f85149" fill-opacity="0.14" stroke="#f85149" stroke-opacity="0.4" stroke-width="1"/>
+      <text x="430" y="46" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="13" fill="#f85149">dirty</text>
+    </g>
+
+    <g id="row-ahead">
+      <text x="36" y="90" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="17" fill="#e6edf3">my-other-repo</text>
+      <rect x="385" y="73" width="75" height="24" rx="9" fill="#d29922" fill-opacity="0.14" stroke="#d29922" stroke-opacity="0.4" stroke-width="1"/>
+      <text x="422.5" y="90" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="13" fill="#d29922">ahead 1</text>
+    </g>
+
+    <g id="row-stash">
+      <text x="36" y="134" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="17" fill="#e6edf3">tools/scanner</text>
+      <rect x="385" y="117" width="75" height="24" rx="9" fill="#d29922" fill-opacity="0.14" stroke="#d29922" stroke-opacity="0.4" stroke-width="1"/>
+      <text x="422.5" y="134" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="13" fill="#d29922">stash 1</text>
+    </g>
+
+    <g id="row-no-remote">
+      <text x="36" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="17" fill="#e6edf3">notes</text>
+      <rect x="370" y="161" width="90" height="24" rx="9" fill="#f85149" fill-opacity="0.14" stroke="#f85149" stroke-opacity="0.4" stroke-width="1"/>
+      <text x="415" y="178" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="13" fill="#f85149">no remote</text>
+    </g>
+
+    <g id="row-clean">
+      <text x="36" y="222" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="17" fill="#6e7681">dotfiles</text>
+      <rect x="400" y="205" width="60" height="24" rx="9" fill="#3fb950" fill-opacity="0.12" stroke="#3fb950" stroke-opacity="0.35" stroke-width="1"/>
+      <text x="430" y="222" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="13" fill="#3fb950">clean</text>
+    </g>
+  </g>
+</svg>
