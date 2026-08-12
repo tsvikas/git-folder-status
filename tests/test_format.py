@@ -71,6 +71,24 @@ class TestFormatReport:
         # the clean worktree is dropped, the dirty one is kept
         assert parsed["with-issue"]["worktrees"] == {"wt-dirty": {"is_dirty": True}}
 
+    def test_include_ok_false_prunes_nested_submodule_worktrees(self) -> None:
+        """Pruning reaches worktrees nested under a submodule key."""
+        issues: dict[str, RepoStats] = {
+            "repo": {
+                "/sub-clean": {"worktrees": {"wt-clean": {}}},
+                "/sub-dirty": {"worktrees": {"wt-dirty": {"is_dirty": True}}},
+                "is_dirty": True,
+            },
+        }
+        result = format_report(issues, include_ok=False, fmt="json")
+        parsed = json.loads(result)
+        # the submodule left with nothing but a clean worktree is dropped
+        assert "/sub-clean" not in parsed["repo"]
+        assert parsed["repo"]["/sub-dirty"]["worktrees"] == {
+            "wt-dirty": {"is_dirty": True}
+        }
+        assert parsed["repo"]["is_dirty"] is True
+
     def test_include_ok_true_keeps_clean_worktrees(self) -> None:
         """With include_ok, clean worktrees are listed."""
         issues: dict[str, RepoStats] = {

@@ -16,16 +16,23 @@ def _prune_clean_worktrees(stats: RepoStats) -> RepoStats:
     """Drop linked worktrees that have no issues of their own.
 
     A clean worktree carries an empty stats dict; it is only worth listing when
-    showing repos without issues (`include_ok`).
+    showing repos without issues (`include_ok`). Recurses, since a submodule's
+    worktrees are nested under the parent's `/<submodule path>` key; a nested
+    entry left empty by the pruning is dropped along with it.
     """
-    worktrees = stats.get("worktrees")
-    if not isinstance(worktrees, dict):
-        return stats
-    pruned: RepoStats = {k: v for k, v in worktrees.items() if v}
-    stats = {k: v for k, v in stats.items() if k != "worktrees"}
-    if pruned:
-        stats["worktrees"] = pruned
-    return stats
+    pruned: RepoStats = {}
+    for key, value in stats.items():
+        if not isinstance(value, dict):
+            pruned[key] = value
+        elif key == "worktrees":
+            kept: RepoStats = {k: v for k, v in value.items() if v}
+            if kept:
+                pruned[key] = kept
+        else:
+            nested = _prune_clean_worktrees(value)
+            if nested or not value:
+                pruned[key] = nested
+    return pruned
 
 
 def format_report(

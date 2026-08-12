@@ -1109,6 +1109,16 @@ class TestWorktreeBranches:
         }
 
 
+def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
+    """Add `source` as a submodule of `parent`, commit it, return its checkout."""
+    actor = Actor("Test", "test@example.com")
+    # cloning over the file protocol is refused by default since git 2.38
+    parent.git(c="protocol.file.allow=always").submodule("add", str(source), name)
+    parent.index.commit("add submodule", author=actor, committer=actor)
+    assert parent.working_tree_dir is not None
+    return Path(parent.working_tree_dir) / name
+
+
 def _init_repo_with_commit(path: Path) -> Repo:
     """Create a git repo with one commit, usable as a worktree base."""
     actor = Actor("Test", "test@example.com")
@@ -1239,6 +1249,30 @@ class TestWorktreeGrouping:
         wt_branch = branches["wt-branch"]
         assert isinstance(wt_branch, dict)
         assert wt_branch["worktree"] == "repo-wt"
+
+    def test_submodule_worktree_nested_under_parent(self, tmp_path: Path) -> None:
+        """A linked worktree of a submodule nests under the parent's entry.
+
+        The submodule checkout is never scanned as a folder of its own, so the
+        grouping must find it through `core.worktree` instead of emitting a
+        second entry for the `.git/modules/...` git dir.
+        """
+        _init_repo_with_commit(tmp_path / "source")
+        parent = _init_repo_with_commit(tmp_path / "parent")
+        sub_path = _add_submodule(parent, tmp_path / "source", "sub")
+        sub = Repo(sub_path)
+        sub.git.worktree("add", str(tmp_path / "sub-wt"), "-b", "wt-branch")
+        (tmp_path / "sub-wt" / "dirty.txt").write_text("x")
+
+        result = issues_for_all_subfolders(tmp_path, recurse=1)
+
+        assert not any("modules" in key for key in result)
+        assert "sub-wt" not in result
+        submodule = result["parent"]["/sub"]
+        assert isinstance(submodule, dict)
+        worktrees = submodule["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert worktrees["sub-wt"] == {"untracked_files": ["dirty.txt"]}
 
     def test_external_worktree_ignored_by_default(self, tmp_path: Path) -> None:
         """A worktree outside the scan is not analyzed without the flag."""

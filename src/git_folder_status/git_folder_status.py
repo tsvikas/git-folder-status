@@ -8,7 +8,7 @@ Run `git-folder-status -h` for help.
 
 import sys
 from collections import ChainMap
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -515,9 +515,29 @@ def _main_worktree_dir(common_dir: Path) -> Path:
     """Derive the main worktree path from a repo's shared git dir.
 
     For a normal repo the shared git dir is `<repo>/.git`, so the main worktree
-    is its parent. For a bare repo the shared git dir is the repo itself.
+    is its parent. A submodule's git dir lives in `<parent>/.git/modules/<path>`
+    and records its checkout in `core.worktree`, relative to the git dir. For a
+    bare repo the shared git dir is the repo itself.
     """
-    return common_dir.parent if common_dir.name == ".git" else common_dir
+    if common_dir.name == ".git":
+        return common_dir.parent
+    try:
+        with Repo(common_dir) as repo:
+            worktree = repo.config_reader("repository").get_value(
+                "core", "worktree", ""
+            )
+    except (InvalidGitRepositoryError, GitCommandError):
+        return common_dir
+    return (common_dir / str(worktree)).resolve() if worktree else common_dir
+
+
+def _enclosing_repo(folder: Path, repo_folders: Iterable[Path]) -> Path | None:
+    """Return the deepest scanned repo folder that strictly contains `folder`."""
+    resolved = folder.resolve()
+    containing = [f for f in repo_folders if f.resolve() in resolved.parents]
+    if not containing:
+        return None
+    return max(containing, key=lambda f: len(f.resolve().parts))
 
 
 def _group_worktrees(
@@ -533,6 +553,11 @@ def _group_worktrees(
     working-tree-specific state is nested under a `worktrees` key. Folders that
     are not git repos, and repos with no linked worktree in the scan, pass
     through unchanged.
+
+    When the main worktree is a submodule checkout of a scanned repo it is not
+    scanned as a folder of its own, but its state is already reported inline
+    under the parent's `/<submodule path>` key; the linked worktrees are nested
+    there rather than emitted as a separate top-level entry.
     """
     groups: dict[Path, list[Path]] = {}
     for folder, identity in identities.items():
@@ -543,6 +568,7 @@ def _group_worktrees(
         if folder not in identities:
             grouped[_relative_key(folder, basedir)] = stats
 
+    submodule_groups: list[tuple[Path, str, RepoStats]] = []
     for common_dir, folders in groups.items():
         linked = [f for f in folders if identities[f].is_linked_worktree]
         mains = [f for f in folders if not identities[f].is_linked_worktree]
@@ -550,24 +576,47 @@ def _group_worktrees(
             for folder in folders:
                 grouped[_relative_key(folder, basedir)] = issues_by_path[folder]
             continue
-        if mains:
-            main_folder = mains[0]
-            entry = dict(issues_by_path[main_folder])
-        else:
-            # the main worktree was not scanned: host the shared state here
-            main_folder = _main_worktree_dir(common_dir)
-            shared, _ = _split_shared_stats(issues_by_path[linked[0]])
-            entry = dict(shared)
-            entry["main_worktree_unscanned"] = True
-        worktrees = {
+        by_key: RepoStats = {
             _relative_key(folder, basedir): _split_shared_stats(issues_by_path[folder])[
                 1
             ]
             for folder in linked
         }
-        entry["worktrees"] = {k: worktrees[k] for k in sorted(worktrees)}
+        worktrees: RepoStats = {k: by_key[k] for k in sorted(by_key)}
+        if mains:
+            main_folder = mains[0]
+            entry = dict(issues_by_path[main_folder])
+        else:
+            main_folder = _main_worktree_dir(common_dir)
+            host = _enclosing_repo(main_folder, identities)
+            if host is not None:
+                key = "/" + main_folder.resolve().relative_to(host.resolve()).as_posix()
+                submodule_groups.append((host, key, worktrees))
+                continue
+            # the main worktree was not scanned: host the shared state here
+            shared, _ = _split_shared_stats(issues_by_path[linked[0]])
+            entry = dict(shared)
+            entry["main_worktree_unscanned"] = True
+        entry["worktrees"] = worktrees
         grouped[_relative_key(main_folder, basedir)] = entry
+
+    _attach_submodule_worktrees(grouped, submodule_groups, basedir)
     return grouped
+
+
+def _attach_submodule_worktrees(
+    grouped: dict[str, RepoStats],
+    submodule_groups: list[tuple[Path, str, RepoStats]],
+    basedir: Path,
+) -> None:
+    """Nest each `(host repo, submodule key, worktrees)` group in place."""
+    for host, key, worktrees in submodule_groups:
+        host_entry = grouped.setdefault(_relative_key(host, basedir), {})
+        sub_entry = host_entry.get(key)
+        if not isinstance(sub_entry, dict):
+            sub_entry = {}
+            host_entry[key] = sub_entry
+        sub_entry["worktrees"] = worktrees
 
 
 def _list_worktree_paths(repo: Repo) -> list[Path]:
