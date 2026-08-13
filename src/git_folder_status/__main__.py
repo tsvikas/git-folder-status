@@ -3,6 +3,6 @@
 use `python -m git_folder_status` to run the cli
 """
 
-from .cli import app
+from .cli import main
 
-app()
+main()

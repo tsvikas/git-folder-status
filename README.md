@@ -42,10 +42,10 @@ for every worktree.
 
 ## Install
 
-Install this tool using pipx (or uv):
+Install this tool using uv (or pipx):
 
 ```bash
-pipx install git+https://github.com/tsvikas/git-folder-status.git
+uv tool install git+https://github.com/tsvikas/git-folder-status.git
 ```
 
 ## Usage
@@ -61,7 +61,7 @@ Use `git-folder-status --help` to learn more.
 ## Contributing
 
 Interested in contributing?
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guideline.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 [black-badge]: https://img.shields.io/badge/code%20style-black-000000.svg
 [black-link]: https://github.com/psf/black
