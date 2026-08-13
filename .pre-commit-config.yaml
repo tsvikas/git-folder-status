@@ -152,7 +152,7 @@ repos:
         additional_dependencies:
           - black==26.5.1  # sync-with-uv
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.21
+    rev: v0.16.2
     hooks:
       - id: ruff-check
         alias: ruff-isort
@@ -160,7 +160,7 @@ repos:
         args: [--select, I001, --fix]
       - id: ruff-check
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.2.0
+    rev: v2.3.0
     hooks:
       - id: mypy
         name: mypy (without imports)

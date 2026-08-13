@@ -17,7 +17,7 @@ def test_app() -> None:
     with pytest.raises(SystemExit) as exc_info:
         app([])
     assert exc_info.value.code == 0
-    # TODO: convert to better tests -- test in a temp folder<<<<<<< before updating
+    # TODO: convert to better tests -- test in a temp folder
 
 
 def test_main_usage_error() -> None:
@@ -40,8 +40,10 @@ def test_main_unhandled_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_invalid_format() -> None:
     """Test invalid format raises error."""
+    # Via `main`, not `app`: cyclopts 4 exits 1 on its own parse errors, and it
+    # is `main` that maps them onto EX_USAGE.
     with pytest.raises(SystemExit) as exc_info:
-        app(["--format", "invalid"])
+        main(["--format", "invalid"])
     assert exc_info.value.code == EX_USAGE
 
 

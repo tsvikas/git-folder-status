@@ -53,7 +53,8 @@ def git_folder_status(  # noqa: PLR0913
         include_all: show other info for repos
         slow: allow slow operations
         include_behind: include branches that are only behind remote
-        scan_external_worktrees: also analyze worktrees located outside the scanned directory
+        scan_external_worktrees: also analyze worktrees located outside the
+            scanned directory
 
     Returns:
         The process exit code.

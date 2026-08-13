@@ -39,7 +39,7 @@ def shorten_dict(items: dict[str, str], limit: int = 10) -> dict[str, str]:
 
 
 RepoStats = dict[
-    str, "None | str | int | bool | list[str] | RepoStats | list[RepoStats]"
+    str, "str | int | bool | list[str] | RepoStats | list[RepoStats] | None"
 ]
 
 # Stats that live in the shared object/ref store and are therefore identical
