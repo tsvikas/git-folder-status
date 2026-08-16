@@ -763,7 +763,7 @@ def issues_for_all_subfolders(  # noqa: PLR0913
         single = {from_basedir: issues_for_one_folder(basedir_working_dir, options)[0]}
         for stats in single.values():
             _relativize_worktree_paths(stats, basedir)
-        return single
+        return simplify_report(single)
 
     # otherwise we check all subfolders:
     identities: dict[Path, RepoIdentity] = {}
@@ -787,7 +787,65 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     ]
     if basedir_files:
         issues["."] = {"untracked_files": shorten_list(basedir_files)}
-    return issues
+    return simplify_report(issues)
+
+
+def _simplify_branches(stats: RepoStats) -> RepoStats:
+    """Lift branches whose only issue is `no_remote` into a flat list.
+
+    Such a branch carries no information beyond its name, so a whole mapping
+    entry per branch is noise. Only an *exactly* `{"no_remote": True}` record is
+    lifted: a branch that also names the `worktree` holding it, or that carries
+    `--all` context like `head`, stays in `branches` with its details intact.
+    The new key takes the place of `branches`, which is dropped if it empties.
+    """
+    branches = stats.get("branches")
+    if not isinstance(branches, dict):
+        return stats
+    bare = [
+        name
+        for name, record in branches.items()
+        if isinstance(record, dict) and record == {"no_remote": True}
+    ]
+    if not bare:
+        return stats
+    kept = {name: record for name, record in branches.items() if name not in bare}
+    simplified: RepoStats = {}
+    for key, value in stats.items():
+        if key != "branches":
+            simplified[key] = value
+            continue
+        simplified["branches_without_remote"] = bare
+        if kept:
+            simplified["branches"] = kept
+    return simplified
+
+
+def simplify_report(issues: dict[str, RepoStats]) -> dict[str, RepoStats]:
+    """Post-process a scan report into a terser shape.
+
+    Applies `_simplify_branches` to every repo entry, including the nested ones:
+    submodules (keyed `/<path>`) and linked worktrees (under `worktrees`) hold
+    entries of the same shape as a top-level repo.
+    """
+    return {key: _simplify_entry(stats) for key, stats in issues.items()}
+
+
+def _simplify_entry(stats: RepoStats) -> RepoStats:
+    """Simplify one repo entry and every repo entry nested inside it."""
+    simplified = _simplify_branches(stats)
+    result: RepoStats = {}
+    for key, value in simplified.items():
+        if key.startswith("/") and isinstance(value, dict):
+            result[key] = _simplify_entry(value)
+        elif key == "worktrees" and isinstance(value, dict):
+            result[key] = {
+                path: _simplify_entry(entry) if isinstance(entry, dict) else entry
+                for path, entry in value.items()
+            }
+        else:
+            result[key] = value
+    return result
 
 
 def is_file(p: Path) -> bool:

@@ -26,6 +26,7 @@ from git_folder_status.git_folder_status import (
     repo_stats,
     shorten_dict,
     shorten_list,
+    simplify_report,
 )
 
 
@@ -1241,10 +1242,9 @@ class TestWorktreeGrouping:
         branches = result["repo"]["branches"]
         assert isinstance(branches, dict)
         # the default branch lives in "repo" itself: the path would only echo the
-        # entry's own key, so no worktree is named
-        own_branch = branches[repo.active_branch.name]
-        assert isinstance(own_branch, dict)
-        assert "worktree" not in own_branch
+        # entry's own key, so no worktree is named. With nothing left to say about
+        # it, the simplify pass lifts it out of `branches` entirely.
+        assert result["repo"]["branches_without_remote"] == [repo.active_branch.name]
         # the linked worktree's branch still names its (other) worktree
         wt_branch = branches["wt-branch"]
         assert isinstance(wt_branch, dict)
@@ -1300,3 +1300,89 @@ class TestWorktreeGrouping:
         key = next(iter(worktrees))
         assert key.endswith("outside-wt")
         assert worktrees[key] == {"untracked_files": ["dirty.txt"]}
+
+
+class TestSimplifyReport:
+    """Test simplify_report."""
+
+    def test_lifts_bare_no_remote_branches(self) -> None:
+        """Branches whose only issue is `no_remote` become a flat list."""
+        issues: dict[str, RepoStats] = {
+            "repo": {"branches": {"a": {"no_remote": True}}}
+        }
+
+        assert simplify_report(issues) == {"repo": {"branches_without_remote": ["a"]}}
+
+    def test_keeps_branches_with_extra_keys(self) -> None:
+        """A record with anything besides `no_remote` stays in `branches`."""
+        issues: dict[str, RepoStats] = {
+            "repo": {
+                "branches": {
+                    "a": {"no_remote": True},
+                    "b": {"no_remote": True, "worktree": "wt"},
+                    "c": {"ahead": 2},
+                }
+            }
+        }
+
+        assert simplify_report(issues) == {
+            "repo": {
+                "branches_without_remote": ["a"],
+                "branches": {
+                    "b": {"no_remote": True, "worktree": "wt"},
+                    "c": {"ahead": 2},
+                },
+            }
+        }
+
+    def test_keeps_key_position_and_other_stats(self) -> None:
+        """The new key takes the place of `branches`, leaving siblings alone."""
+        issues: dict[str, RepoStats] = {
+            "repo": {
+                "is_dirty": True,
+                "branches": {"a": {"no_remote": True}},
+                "stash_count": 1,
+            }
+        }
+
+        assert list(simplify_report(issues)["repo"]) == [
+            "is_dirty",
+            "branches_without_remote",
+            "stash_count",
+        ]
+
+    def test_no_bare_branches_is_a_noop(self) -> None:
+        """Without a bare record, the entry is returned unchanged."""
+        issues: dict[str, RepoStats] = {"repo": {"branches": {"a": {"ahead": 1}}}}
+
+        assert simplify_report(issues) == issues
+
+    def test_include_all_context_blocks_the_lift(self) -> None:
+        """Under `--all` every record carries `head`, so nothing is lifted."""
+        issues: dict[str, RepoStats] = {
+            "repo": {"branches": {"a": {"no_remote": True, "head": "abc123"}}}
+        }
+
+        assert simplify_report(issues) == issues
+
+    def test_recurses_into_submodules_and_worktrees(self) -> None:
+        """Nested repo entries are simplified like top-level ones.
+
+        A worktree entry never holds `branches` itself: that key is shared
+        across a repo's worktrees and so is hoisted to the main entry. It can
+        hold a submodule entry, whose branches are per-working-tree and do stay
+        nested, so the recursion has to reach two levels down.
+        """
+        issues: dict[str, RepoStats] = {
+            "repo": {
+                "/sub": {"branches": {"a": {"no_remote": True}}},
+                "worktrees": {"wt": {"/sub": {"branches": {"b": {"no_remote": True}}}}},
+            }
+        }
+
+        assert simplify_report(issues) == {
+            "repo": {
+                "/sub": {"branches_without_remote": ["a"]},
+                "worktrees": {"wt": {"/sub": {"branches_without_remote": ["b"]}}},
+            }
+        }
