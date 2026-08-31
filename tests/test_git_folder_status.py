@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
-from git import Actor, GitCommandError, Repo
+from git import Actor, GitCommandError, InvalidGitRepositoryError, Repo
 
 from git_folder_status.git_folder_status import (
     RepoIdentity,
@@ -737,6 +737,17 @@ class TestIssuesForOneFolder:
         (tmp_path / "some_file.py").write_text("content")
 
         result, identity = issues_for_one_folder(tmp_path, ScanOptions())
+        assert result == {"error": "orphaned worktree"}
+        assert identity is None
+
+    def test_orphaned_worktree_rejected_by_repo_init(self, tmp_path: Path) -> None:
+        """Test orphaned worktree that gitpython rejects when opening the repo."""
+        (tmp_path / ".git").write_text("gitdir: /nonexistent/worktree/path\n")
+        (tmp_path / "some_file.py").write_text("content")
+
+        with patch("git_folder_status.git_folder_status.Repo") as mock_repo_class:
+            mock_repo_class.side_effect = InvalidGitRepositoryError(str(tmp_path))
+            result, identity = issues_for_one_folder(tmp_path, ScanOptions())
         assert result == {"error": "orphaned worktree"}
         assert identity is None
 
