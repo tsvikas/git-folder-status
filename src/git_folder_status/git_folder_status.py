@@ -453,6 +453,10 @@ def issues_for_one_folder(
         assert isinstance(submodules_st, dict)  # noqa: S101
         issues: RepoStats = repo_st | branches_st | tags_st | submodules_st  # type: ignore[operator]
     except InvalidGitRepositoryError:
+        # gitpython >=3.1.60 rejects a worktree whose gitdir is gone here,
+        # older versions only fail later, when a git command is run.
+        if is_orphaned_worktree(folder):
+            return {"error": "orphaned worktree"}, None
         return ({"is_git": False} if any(folder.glob("*")) else {}), None
     except GitCommandError as e:
         if is_orphaned_worktree(folder):
