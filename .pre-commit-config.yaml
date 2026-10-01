@@ -23,7 +23,7 @@ repos:
   # Sync Python and pre-commit package versions
   # pyproject.toml -> uv.lock
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.5
+    rev: "0.12.21"
     hooks:
       - id: uv-lock
   # uv.lock -> .pre-commit-config.yaml
@@ -109,7 +109,7 @@ repos:
       - id: editorconfig-checker
         exclude_types: [jupyter]
   - repo: https://github.com/google/keep-sorted
-    rev: v0.9.1
+    rev: v0.10.0
     hooks:
       - id: keep-sorted
 
@@ -119,7 +119,7 @@ repos:
     hooks:
       - id: codespell
   - repo: https://github.com/adhtruong/mirrors-typos
-    rev: v1.49.0
+    rev: v1.50.3
     hooks:
       - id: typos
   - repo: local
@@ -160,7 +160,7 @@ repos:
         additional_dependencies:
           - black==26.5.1  # sync-with-uv
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.3
+    rev: v0.16.9
     hooks:
       - id: ruff-check
         alias: ruff-isort
@@ -169,7 +169,7 @@ repos:
       - id: ruff-check
         types_or: [python, pyi, jupyter, pyproject]
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
+    rev: v2.3.1
     hooks:
       - id: mypy
         name: mypy (without imports)
@@ -190,7 +190,7 @@ repos:
 
   # pyproject.toml
   - repo: https://github.com/henryiii/validate-pyproject-schema-store
-    rev: 2026.08.15
+    rev: "2026.09.30"
     hooks:
       - id: validate-pyproject
 
@@ -202,7 +202,7 @@ repos:
 
   # GitHub files
   - repo: https://github.com/python-jsonschema/check-jsonschema
-    rev: 0.38.0
+    rev: "0.38.2"
     hooks:
       - id: check-dependabot
       - id: check-github-actions
@@ -210,21 +210,21 @@ repos:
       - id: check-readthedocs
   # Maintained fork of rhysd/actionlint (inactive since 2026-04), supports `uses: $/`
   - repo: https://github.com/kjanat/actionlint
-    rev: v1.8.0
+    rev: v1.17.0
     hooks:
       - id: actionlint
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.29.0
+    rev: v1.30.1
     hooks:
       - id: zizmor
 
   # Shell scripts
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
+    rev: v0.11.0.1-1
     hooks:
       - id: shellcheck
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.13.1-1
+    rev: v3.14.1-1
     hooks:
       - id: shfmt
   - repo: https://github.com/hugoh/pre-commit-fish
