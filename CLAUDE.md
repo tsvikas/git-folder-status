@@ -25,7 +25,7 @@ uv run just serve-docs       # Serve docs locally
 
 # Other tasks
 uv run just deps-update      # Update all dependencies
-uv run just test-lowest 3.10 # Test with lowest dependency versions
+uv run just test-lowest 3.11 # Test with lowest dependency versions
 ```
 
 **CRITICAL**: Always run `uv run just format` then `uv run just lint` and `uv run just test` before committing.
@@ -67,7 +67,7 @@ This project enforces strict quality standards through `just format`, `just lint
 
 - All functions must have type hints
 - Branch coverage required for all new code
-- Tests run across Python 3.10-3.14 including PyPy variants
+- Tests run across Python 3.11-3.14 including PyPy variants
 - All pre-commit hooks must pass
 
 ## Development Environment Notes
@@ -79,7 +79,7 @@ This project enforces strict quality standards through `just format`, `just lint
   - use `uv sync` to install dependencies
 - **GitPython** for repository operations
 - **Cyclopts** for CLI interface
-- Supports Python 3.10+ including PyPy variants
+- Supports Python 3.11+ including PyPy variants
 
 ### Template-based Project
 
