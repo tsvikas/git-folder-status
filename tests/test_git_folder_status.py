@@ -109,7 +109,9 @@ class TestFilterSubmoduleIssues:
         }
         result = _filter_submodule_issues(issues)
         assert "branches" in result
-        assert "main" in result["branches"]  # type: ignore[operator]
+        branches = result["branches"]
+        assert isinstance(branches, dict)
+        assert "main" in branches
 
     def test_keeps_branches_both_ahead_and_behind(self) -> None:
         """Test that branches both ahead and behind are kept."""
@@ -120,7 +122,9 @@ class TestFilterSubmoduleIssues:
         }
         result = _filter_submodule_issues(issues)
         assert "branches" in result
-        assert "main" in result["branches"]  # type: ignore[operator]
+        branches = result["branches"]
+        assert isinstance(branches, dict)
+        assert "main" in branches
 
     def test_keeps_branches_with_upstream_problem(self) -> None:
         """Test that an upstream problem is kept even with no ahead commits."""

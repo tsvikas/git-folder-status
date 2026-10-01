@@ -122,10 +122,10 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
         "stash_count",
         "is_detached_head",
     }
-    issues = repo_stats(repo)
+    stats = repo_stats(repo)
     if not options.include_all:
-        issues = {k: v for k, v in issues.items() if k in stats_to_include}
-    issues = {k: v for k, v in issues.items() if v}
+        stats = {k: v for k, v in stats.items() if k in stats_to_include}
+    issues: RepoStats = {k: v for k, v in stats.items() if v}
     return issues
 
 
@@ -349,7 +349,8 @@ def repo_issues_in_tags(repo: Repo, options: ScanOptions) -> RepoStats:
     issues: RepoStats = {}
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if options.include_all:
-        issues["local_tags"] = shorten_dict(local_tags)  # type: ignore[assignment]
+        shown_tags: RepoStats = {**shorten_dict(local_tags)}
+        issues["local_tags"] = shown_tags
     if options.slow:
         remote_tags: ChainMap[str, str] = ChainMap(
             *(_remote_tags(repo, remote.name) for remote in repo.remotes)
