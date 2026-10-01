@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 import pytest
 
 from git_folder_status import __version__, cli
@@ -45,13 +43,3 @@ def test_invalid_format() -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["--format", "invalid"])
     assert exc_info.value.code == EX_USAGE
-
-
-def test_module_not_found_error(capsys: pytest.CaptureFixture[str]) -> None:
-    """Test ModuleNotFoundError handling."""
-    with patch("git_folder_status.cli.format_report") as mock_format:
-        mock_format.side_effect = ModuleNotFoundError("test module not found")
-        with pytest.raises(SystemExit) as exc_info:
-            app([])
-    assert exc_info.value.code != 0
-    assert "Missing module for format" in str(capsys.readouterr().err)

@@ -74,16 +74,7 @@ def git_folder_status(  # noqa: PLR0913
         include_behind=include_behind,
         scan_external_worktrees=scan_external_worktrees,
     )
-    try:
-        report = format_report(issues, include_ok=empty, fmt=fmt)
-    except ModuleNotFoundError as e:
-        print(
-            "Missing module for format. Try a different format or a newer python.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2) from e
-    else:
-        print(report)
+    print(format_report(issues, include_ok=empty, fmt=fmt))
     return 0
 
 
