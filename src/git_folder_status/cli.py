@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import cyclopts.types
-from cyclopts import App, CycloptsError, Parameter
+from cyclopts import App, Parameter
 
 from . import (
     REPORT_FORMATS_TYPE,
@@ -82,12 +82,9 @@ def git_folder_status(  # noqa: PLR0913
 # Maps the commands above onto exit codes, and is what `[project.scripts]` and
 # `__main__` both call.
 
-# sysexits(3) would put usage errors at 64, but 2 is the far wider convention:
-# argparse, click, clap, grep, diff, curl and bash builtins all use it.
-# https://stackoverflow.com/questions/1101957/are-there-any-standard-exit-status-codes-in-linux
-EX_USAGE = 2
-# The rest are sysexits(3) codes. `os.EX_*` holds the same values but only
-# exists on Unix, so they are inlined to keep the CLI importable on Windows.
+# Cyclopts itself exits 2 on invalid usage. These are sysexits(3) codes.
+# `os.EX_*` holds the same values but only exists on Unix, so they are inlined
+# to keep the CLI importable on Windows.
 EX_NOINPUT = 66
 EX_UNAVAILABLE = 69
 EX_SOFTWARE = 70
@@ -110,12 +107,7 @@ def main(tokens: Sequence[str] | None = None) -> None:
         # `tokens` is a parameter so that tests can pass a command line here.
         # Under pytest, a bare `app()` warns, since it would parse pytest's own
         # argv, and a test that does so passes while testing nothing.
-        app(tokens, exit_on_error=False)
-    except CycloptsError:
-        # Cyclopts has already printed its own error panel. Cyclopts >=5 exits 2
-        # on parse errors itself, so once the dependency requires it, this clause
-        # and `exit_on_error=False` above can both go.
-        sys.exit(EX_USAGE)
+        app(tokens)
     # Nothing reports the errors below, so without `_fail` the CLI would exit on
     # a bare code and no output. Match on the exception rather than on
     # `type(exc)`, so that subclasses such as ConnectionRefusedError still land
