@@ -15,6 +15,7 @@ from git_folder_status.git_folder_status import (
     _relative_key,
     _split_shared_stats,
     _worktree_branches,
+    all_branches_status,
     branch_status,
     is_file,
     is_orphaned_worktree,
@@ -459,6 +460,77 @@ class TestBranchStatus:
         result = branch_status(repo, repo.heads["feature"])
         assert result["upstream"] == "default"
         assert "ahead" not in result
+
+
+class TestContainedInDefault:
+    """Test the `contained_in` qualifier on branches with no unique commits."""
+
+    @staticmethod
+    def _clone(tmp_path: Path) -> Repo:
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+
+    @staticmethod
+    def _commit(repo: Repo, filename: str) -> None:
+        assert repo.working_tree_dir is not None
+        (Path(repo.working_tree_dir) / filename).write_text("x")
+        repo.index.add([filename])
+        actor = Actor("Test", "test@example.com")
+        repo.index.commit(filename, author=actor, committer=actor)
+
+    def test_marks_branches_without_unique_commits(self, tmp_path: Path) -> None:
+        """Each upstream problem state gains `contained_in` only when it applies."""
+        repo = self._clone(tmp_path)
+        repo.git.branch("scratch")
+        repo.git.branch("--track", "empty-feature", "origin/main")
+        # pushed once, then its remote branch deleted and pruned
+        repo.git.push("origin", "main:old")
+        repo.git.branch("--track", "old", "origin/old")
+        repo.git.push("origin", "--delete", "old")
+        repo.git.switch("-c", "wip")
+        self._commit(repo, "wip.txt")
+        repo.git.switch("main")
+
+        result = repo_issues_in_branches(repo, ScanOptions())
+
+        assert result["branches"] == {
+            "empty-feature": {
+                "tracks_default_branch": "origin/main",
+                "contained_in": "origin/main",
+            },
+            "old": {"remote_deleted": "origin/old", "contained_in": "origin/main"},
+            "scratch": {"no_remote": True, "contained_in": "origin/main"},
+            "wip": {"no_remote": True},
+        }
+
+    def test_older_commit_on_main_is_contained(self, tmp_path: Path) -> None:
+        """A branch left behind after main moved on is still contained."""
+        repo = self._clone(tmp_path)
+        repo.git.branch("stale")
+        self._commit(Repo(tmp_path / "source"), "more.txt")
+        repo.git.fetch()
+
+        status = all_branches_status(repo)["stale"]
+        assert status["contained_in"] == "origin/main"
+
+    def test_tracked_in_sync_branch_not_annotated(self, tmp_path: Path) -> None:
+        """A branch with a real upstream never gets `contained_in`."""
+        repo = self._clone(tmp_path)
+
+        status = all_branches_status(repo)["main"]
+        assert "contained_in" not in status
+
+    def test_submodule_drops_contained_branches(self) -> None:
+        """In a submodule a contained branch has no work at risk, so it is hidden."""
+        issues: RepoStats = {
+            "branches": {
+                "scratch": {"no_remote": True, "contained_in": "origin/main"},
+                "wip": {"no_remote": True},
+            },
+        }
+        result = _filter_submodule_issues(issues)
+        assert result["branches"] == {"wip": {"no_remote": True}}
 
 
 class TestRepoIssuesInBranches:

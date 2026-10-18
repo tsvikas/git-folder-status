@@ -251,6 +251,30 @@ def _worktree_branches(repo: Repo) -> dict[str, str]:
     }
 
 
+# upstream states with no usable ahead count, so containment in a remote
+# default branch is the only sign of whether the branch holds unique work
+_CONTAINMENT_STATES = frozenset({"missing", "gone", "default"})
+
+
+def _contained_in_default(repo: Repo) -> dict[str, str]:
+    """Map each local branch to a remote main/master that contains its head.
+
+    Runs one `git for-each-ref --merged` per remote default branch, not one
+    query per local branch. The first containing ref wins.
+    """
+    contained: dict[str, str] = {}
+    for remote in repo.remotes:
+        for ref in remote.refs:
+            if ref.remote_head not in DEFAULT_BRANCH_NAMES:
+                continue
+            out = repo.git.for_each_ref(
+                "--merged", ref.name, "--format=%(refname)", "refs/heads"
+            )
+            for refname in out.splitlines():
+                contained.setdefault(refname.removeprefix("refs/heads/"), ref.name)
+    return contained
+
+
 def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     """Return the upstream status of all branches in a repo.
 
@@ -258,6 +282,10 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     holding that worktree's path, so a diverged branch can be located. A branch
     checked out in `repo` itself gets no such field: the path would only echo
     the repo being reported on, so it is redundant.
+
+    A branch in a `_CONTAINMENT_STATES` state whose head is reachable from a
+    remote main/master carries a `contained_in` field naming that ref: it has
+    no commits of its own, so deleting it loses nothing.
     """
     branches = [b for b in repo.branches if not b.name.startswith("gitbutler/")]
     if not branches:
@@ -271,6 +299,12 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
         if worktree is not None and worktree != own:
             status["worktree"] = worktree
         result[branch.name] = status
+    # skip the git calls when no branch can use the answer
+    if any(st["upstream"] in _CONTAINMENT_STATES for st in result.values()):
+        contained = _contained_in_default(repo)
+        for name, status in result.items():
+            if status["upstream"] in _CONTAINMENT_STATES and name in contained:
+                status["contained_in"] = contained[name]
     return result
 
 
@@ -291,14 +325,8 @@ _REMOTE_BRANCH_ISSUE_KEYS = {
 }
 
 
-def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
-    """Shape a branch's upstream status for the report.
-
-    A clean, in-sync branch yields `{}`, so the report's generic "drop falsy"
-    pass removes it with no special case: every key present marks a real
-    deviation. The `--all` view re-adds `remote_branch`/`head` so even clean
-    branches stay non-empty and are listed.
-    """
+def _upstream_issue(status: RepoStats) -> RepoStats:
+    """Return the report keys describing a branch's upstream state."""
     upstream = status["upstream"]
     record: RepoStats = {}
     if upstream == "missing":
@@ -320,6 +348,21 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
             record["ahead"] = status["ahead"]
         if status.get("behind"):
             record["behind"] = status["behind"]
+    return record
+
+
+def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
+    """Shape a branch's upstream status for the report.
+
+    A clean, in-sync branch yields `{}`, so the report's generic "drop falsy"
+    pass removes it with no special case: every key present marks a real
+    deviation. The `--all` view re-adds `remote_branch`/`head` so even clean
+    branches stay non-empty and are listed.
+    """
+    record = _upstream_issue(status)
+    if status.get("contained_in"):
+        # qualifies the upstream issue: no commits would be lost
+        record["contained_in"] = status["contained_in"]
     # remote_branch and head are context, not issue triggers: attach them only
     # under --all, so they never keep a clean branch in the regular report.
     if include_all:
@@ -413,6 +456,7 @@ def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
 
     Submodules are pinned to specific commits, so being "behind" the remote
     is expected. We only care about branches that are ahead (unpushed commits).
+    A branch `contained_in` a remote default branch has no work at risk either.
     """
     filtered = {k: v for k, v in issues.items() if k != "is_detached_head"}
     branches = filtered.get("branches")
@@ -420,7 +464,9 @@ def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
         kept: RepoStats = {
             branch: record
             for branch, record in branches.items()
-            if isinstance(record, dict) and not _is_branch_behind_only(record)
+            if isinstance(record, dict)
+            and not _is_branch_behind_only(record)
+            and "contained_in" not in record
         }
         if kept:
             filtered["branches"] = kept
