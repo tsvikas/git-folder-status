@@ -132,6 +132,7 @@ class TestFilterSubmoduleIssues:
             "branches": {
                 "local": {"no_remote": True},
                 "stale": {"remote_deleted": "origin/stale"},
+                "feature": {"tracks_default_branch": "origin/main"},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -405,6 +406,60 @@ class TestBranchStatus:
             "head": "abc123",
         }
 
+    def test_feature_branch_tracking_default_branch(self) -> None:
+        """A non-default branch tracking `origin/main` skips ahead/behind."""
+        mock_repo = Mock(spec=Repo)
+        mock_branch = Mock()
+        mock_branch.name = "feature"
+        mock_branch.commit.hexsha = "abc123"
+        mock_tracking = Mock()
+        mock_tracking.name = "origin/main"
+        mock_tracking.remote_head = "main"
+        mock_branch.tracking_branch.return_value = mock_tracking
+        mock_repo.refs = {"origin/main": Mock()}
+
+        result = branch_status(mock_repo, mock_branch)
+        assert result == {
+            "upstream": "default",
+            "remote_branch": "origin/main",
+            "head": "abc123",
+        }
+        mock_repo.iter_commits.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["main", "master"])
+    def test_default_branch_tracking_default_branch(self, name: str) -> None:
+        """`main`/`master` tracking a remote main/master is a normal upstream."""
+        mock_repo = Mock(spec=Repo)
+        mock_branch = Mock()
+        mock_branch.name = name
+        mock_branch.commit.hexsha = "abc123"
+        mock_tracking = Mock()
+        mock_tracking.name = "origin/master"
+        mock_tracking.remote_head = "master"
+        mock_branch.tracking_branch.return_value = mock_tracking
+        mock_repo.refs = {"origin/master": Mock()}
+        mock_repo.iter_commits.return_value = iter([])
+
+        result = branch_status(mock_repo, mock_branch)
+        assert result["upstream"] == "set"
+
+    def test_feature_branch_tracking_default_branch_real_repo(
+        self, tmp_path: Path
+    ) -> None:
+        """`git switch -c feature origin/main` yields the `default` state."""
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        repo = Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+        repo.git.switch("-c", "feature", "--track", "origin/main")
+        (tmp_path / "clone" / "new.txt").write_text("x")
+        repo.index.add(["new.txt"])
+        actor = Actor("Test", "test@example.com")
+        repo.index.commit("work", author=actor, committer=actor)
+
+        result = branch_status(repo, repo.heads["feature"])
+        assert result["upstream"] == "default"
+        assert "ahead" not in result
+
 
 class TestRepoIssuesInBranches:
     """Test repo_issues_in_branches function."""
@@ -514,6 +569,23 @@ class TestRepoIssuesInBranches:
 
             assert result["branches"] == {
                 "stale": {"remote_deleted": "origin/stale"},
+            }
+
+    def test_branches_tracking_default_branch(self) -> None:
+        """A feature branch tracking main is reported without ahead/behind."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch(
+            "git_folder_status.git_folder_status.all_branches_status"
+        ) as mock_all_branches:
+            mock_all_branches.return_value = {
+                "feature": {"upstream": "default", "remote_branch": "origin/main"},
+            }
+
+            result = repo_issues_in_branches(mock_repo, ScanOptions())
+
+            assert result["branches"] == {
+                "feature": {"tracks_default_branch": "origin/main"},
             }
 
     def test_remote_not_tracked_keeps_behind_in_candidate(self) -> None:

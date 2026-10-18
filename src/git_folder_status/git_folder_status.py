@@ -151,6 +151,9 @@ def _matching_remote_branch(repo: Repo, branch: Head) -> RemoteReference | None:
     return (exact or candidates)[0]
 
 
+DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
+
+
 def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
     """Return (ahead, behind): commits on `local` not on `remote`, and vice versa."""
     behind = len(list(repo.iter_commits(f"{local}..{remote}")))
@@ -161,7 +164,7 @@ def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
 def branch_status(repo: Repo, branch: Head) -> RepoStats:
     """Return the upstream relationship of a single branch.
 
-    The `upstream` field discriminates four mutually exclusive states:
+    The `upstream` field discriminates five mutually exclusive states:
 
     - `set`: a real upstream is configured and its remote ref exists.
     - `unset`: no upstream configured, but a remote branch matches by name
@@ -169,6 +172,10 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
       Its ahead/behind counts are measured against that name-matched
       *candidate*, so they are only a guess.
     - `gone`: an upstream is configured but its remote ref no longer exists.
+    - `default`: a branch not itself named main/master tracks a remote
+      main/master (typically created with `git switch -c feature origin/main`).
+      Its ahead/behind counts would only measure drift from the default
+      branch, not unpushed work, so they are not computed.
     - `missing`: local-only, no upstream and no matching remote branch.
     """
     head = branch.commit.hexsha
@@ -190,6 +197,11 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
     remote_branch = tracking_branch.name
     if remote_branch not in repo.refs:
         return {"upstream": "gone", "remote_branch": remote_branch, "head": head}
+    if (
+        tracking_branch.remote_head in DEFAULT_BRANCH_NAMES
+        and branch.name not in DEFAULT_BRANCH_NAMES
+    ):
+        return {"upstream": "default", "remote_branch": remote_branch, "head": head}
     ahead, behind = _ahead_behind(repo, branch.name, remote_branch)
     return {
         "upstream": "set",
@@ -264,12 +276,19 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
 
 def _branch_has_issue(status: RepoStats, *, include_behind: bool) -> bool:
     """Whether a branch's upstream status is worth reporting."""
-    # any non-`set` upstream state (missing / unset / gone) is itself the issue
+    # any non-`set` upstream state (missing/unset/gone/default) is itself the issue
     if status["upstream"] != "set":
         return True
     if status.get("ahead"):
         return True
     return bool(include_behind and status.get("behind"))
+
+
+# upstream states reported as a single key naming the configured remote branch
+_REMOTE_BRANCH_ISSUE_KEYS = {
+    "gone": "remote_deleted",
+    "default": "tracks_default_branch",
+}
 
 
 def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
@@ -284,8 +303,8 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
     record: RepoStats = {}
     if upstream == "missing":
         record["no_remote"] = True
-    elif upstream == "gone":
-        record["remote_deleted"] = status["remote_branch"]
+    elif upstream in _REMOTE_BRANCH_ISSUE_KEYS:
+        record[_REMOTE_BRANCH_ISSUE_KEYS[upstream]] = status["remote_branch"]
     elif upstream == "unset":
         # the candidate is matched by name, not configured, so its ahead/behind
         # are provisional: keep them scoped inside this block, never at the top
@@ -379,7 +398,13 @@ def _is_branch_behind_only(record: RepoStats) -> bool:
     For submodules such a branch is not worth reporting (see below), whereas
     unpushed (`ahead`) commits and any upstream problem still are.
     """
-    issue_keys = {"ahead", "no_remote", "remote_not_tracked", "remote_deleted"}
+    issue_keys = {
+        "ahead",
+        "no_remote",
+        "remote_not_tracked",
+        "remote_deleted",
+        "tracks_default_branch",
+    }
     return "behind" in record and not (issue_keys & record.keys())
 
 
