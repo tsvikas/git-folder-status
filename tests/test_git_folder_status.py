@@ -80,15 +80,21 @@ class TestShortenDict:
 class TestFilterSubmoduleIssues:
     """Test _filter_submodule_issues function."""
 
-    def test_removes_is_detached_head(self) -> None:
-        """Test that is_detached_head is filtered out."""
+    def test_removes_contained_detached_head(self) -> None:
+        """A detached HEAD that some ref contains is the normal submodule state."""
         issues: RepoStats = {
             "is_dirty": True,
             "is_detached_head": True,
+            "detached_head_contained_in": "origin/main",
         }
         result = _filter_submodule_issues(issues)
-        assert "is_detached_head" not in result
-        assert result["is_dirty"] is True
+        assert result == {"is_dirty": True}
+
+    def test_keeps_unreachable_detached_head(self) -> None:
+        """A detached HEAD no ref contains holds commits at risk, so it stays."""
+        issues: RepoStats = {"is_detached_head": True}
+        result = _filter_submodule_issues(issues)
+        assert result == {"is_detached_head": True}
 
     def test_removes_branches_only_behind(self) -> None:
         """Test that branches only behind remote are filtered out."""
@@ -531,6 +537,64 @@ class TestContainedInDefault:
         }
         result = _filter_submodule_issues(issues)
         assert result["branches"] == {"wip": {"no_remote": True}}
+
+
+class TestDetachedHeadContainedIn:
+    """Test the `detached_head_contained_in` qualifier on a detached HEAD."""
+
+    @staticmethod
+    def _commit(repo: Repo, filename: str) -> None:
+        assert repo.working_tree_dir is not None
+        (Path(repo.working_tree_dir) / filename).write_text("x")
+        repo.index.add([filename])
+        actor = Actor("Test", "test@example.com")
+        repo.index.commit(filename, author=actor, committer=actor)
+
+    def _clone(self, tmp_path: Path) -> Repo:
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        source.git.branch("other")
+        source.git.update_ref("refs/tags/v1", "HEAD")
+        return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+
+    def test_prefers_remote_default_branch(self, tmp_path: Path) -> None:
+        """Remote refs beat tags and local branches; main beats other names."""
+        repo = self._clone(tmp_path)
+        repo.git.checkout("--detach")
+
+        result = repo_issues_in_stats(repo, ScanOptions())
+        assert result == {
+            "is_detached_head": True,
+            "detached_head_contained_in": "origin/main",
+        }
+
+    def test_local_branch_only(self, tmp_path: Path) -> None:
+        """A commit only on a local branch is still reachable."""
+        repo = self._clone(tmp_path)
+        self._commit(repo, "local.txt")
+        repo.git.checkout("--detach")
+
+        result = repo_issues_in_stats(repo, ScanOptions())
+        assert result["detached_head_contained_in"] == "main"
+
+    def test_tag_beats_local_branch(self, tmp_path: Path) -> None:
+        """A tagged commit reports the tag ahead of a local branch."""
+        repo = self._clone(tmp_path)
+        self._commit(repo, "local.txt")
+        repo.git.update_ref("refs/tags/v2", "HEAD")
+        repo.git.checkout("--detach")
+
+        result = repo_issues_in_stats(repo, ScanOptions())
+        assert result["detached_head_contained_in"] == "v2"
+
+    def test_unreachable_commit(self, tmp_path: Path) -> None:
+        """A commit made on the detached HEAD is reachable from no ref."""
+        repo = self._clone(tmp_path)
+        repo.git.checkout("--detach")
+        self._commit(repo, "detached.txt")
+
+        result = repo_issues_in_stats(repo, ScanOptions())
+        assert result == {"is_detached_head": True}
 
 
 class TestRepoIssuesInBranches:

@@ -90,6 +90,42 @@ class RepoIdentity:
         return self.common_dir != self.git_dir
 
 
+DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
+
+
+# namespaces searched for a ref holding a detached HEAD, most informative first:
+# a remote ref means the commit is pushed, a local branch only that it is kept
+_HEAD_CONTAINER_NAMESPACES = ("refs/remotes/", "refs/tags/", "refs/heads/")
+
+
+def _ref_containing_head(repo: Repo) -> str | None:
+    """Return a ref whose history contains HEAD, or `None` if none does.
+
+    A detached HEAD reachable from no ref holds commits that `git gc` will
+    eventually drop once HEAD moves away. Prefers remote refs, then tags, then
+    local branches, and within each a main/master branch.
+    """
+    out = repo.git.for_each_ref(
+        "--contains",
+        "HEAD",
+        "--format=%(refname) %(refname:short)",
+        *_HEAD_CONTAINER_NAMESPACES,
+    )
+    candidates: list[tuple[int, bool, str]] = []
+    for line in out.splitlines():
+        refname, short = line.split(" ", 1)
+        if refname.startswith("refs/remotes/") and refname.endswith("/HEAD"):
+            continue  # a symbolic alias of a remote branch listed on its own
+        rank = next(
+            i
+            for i, ns in enumerate(_HEAD_CONTAINER_NAMESPACES)
+            if refname.startswith(ns)
+        )
+        is_default = refname.rsplit("/", 1)[-1] in DEFAULT_BRANCH_NAMES
+        candidates.append((rank, not is_default, short))
+    return min(candidates)[2] if candidates else None
+
+
 def repo_stats(repo: Repo) -> RepoStats:
     """Return stats for a repo."""
     # `git status` and `git stash` fail without a work tree, so skip them
@@ -107,6 +143,9 @@ def repo_stats(repo: Repo) -> RepoStats:
         "is_dirty": repo.is_dirty(),
         "untracked_files": untracked_files,
         "is_detached_head": head.is_detached,
+        "detached_head_contained_in": (
+            _ref_containing_head(repo) if head.is_detached and commit else None
+        ),
         "active_branch": None if head.is_detached else repo.active_branch.name,
         "head_commit_hash_short": commit.hexsha[:7] if commit else None,
         "remotes": {r.name: list(r.urls) for r in repo.remotes},
@@ -121,6 +160,7 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
         "untracked_files",
         "stash_count",
         "is_detached_head",
+        "detached_head_contained_in",
     }
     stats = repo_stats(repo)
     if not options.include_all:
@@ -149,9 +189,6 @@ def _matching_remote_branch(repo: Repo, branch: Head) -> RemoteReference | None:
     exact_names = {f"{remote.name}{suffix}" for remote in repo.remotes}
     exact = [ref for ref in candidates if ref.name in exact_names]
     return (exact or candidates)[0]
-
-
-DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
 
 
 def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
@@ -457,8 +494,12 @@ def _filter_submodule_issues(issues: RepoStats) -> RepoStats:
     Submodules are pinned to specific commits, so being "behind" the remote
     is expected. We only care about branches that are ahead (unpushed commits).
     A branch `contained_in` a remote default branch has no work at risk either.
+    A detached HEAD is the normal submodule state, so it is kept only when no
+    ref contains it: then commits made in the submodule are at risk.
     """
-    filtered = {k: v for k, v in issues.items() if k != "is_detached_head"}
+    filtered = dict(issues)
+    if "detached_head_contained_in" in filtered:
+        del filtered["is_detached_head"], filtered["detached_head_contained_in"]
     branches = filtered.get("branches")
     if isinstance(branches, dict):
         kept: RepoStats = {
