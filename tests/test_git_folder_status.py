@@ -1,6 +1,5 @@
 """Tests for git_folder_status module."""
 
-import shutil
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
@@ -560,7 +559,7 @@ class TestRemoteListing:
         return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
 
     def _clone_with_dead_remote(self, tmp_path: Path) -> Repo:
-        """Clone, add a second remote `dead`, push to it, then delete its repo."""
+        """Clone, add a second remote `dead`, push to it, then point it nowhere."""
         repo = self._clone(tmp_path)
         Repo.init(tmp_path / "dead", bare=True)
         repo.create_remote("dead", str(tmp_path / "dead"))
@@ -571,7 +570,7 @@ class TestRemoteListing:
         self._commit(repo, "work.txt")
         repo.git.push("-u", "dead", "work")
         repo.git.switch("main")
-        shutil.rmtree(tmp_path / "dead")
+        repo.git.remote("set-url", "dead", str(tmp_path / "deleted"))
         return repo
 
     def test_dead_remote_only_seen_with_slow(self, tmp_path: Path) -> None:
@@ -625,7 +624,7 @@ class TestRemoteListing:
         repo.git.push("dead", "scratch:main")
         repo.git.fetch("dead")
         repo.git.switch("main")
-        shutil.rmtree(tmp_path / "dead")
+        repo.git.remote("set-url", "dead", str(tmp_path / "deleted"))
 
         status = all_branches_status(repo, list_remotes(repo))["scratch"]
         assert status == {"upstream": "missing", "head": status["head"]}
@@ -665,7 +664,7 @@ class TestRemoteListing:
         self._commit(repo, "wip.txt")
         repo.git.push("dead", "wip")
         repo.git.switch("main")
-        shutil.rmtree(tmp_path / "dead")
+        repo.git.remote("set-url", "dead", str(tmp_path / "deleted"))
 
         result = repo_issues_in_branches(
             repo, ScanOptions(slow=True), list_remotes(repo)
