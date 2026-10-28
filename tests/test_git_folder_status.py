@@ -407,6 +407,7 @@ class TestBranchStatus:
         mock_branch.tracking_branch.return_value = mock_tracking
 
         mock_repo.refs = {}  # Remote branch doesn't exist
+        mock_repo.remotes = []
 
         result = branch_status(mock_repo, mock_branch)
         assert result == {
@@ -631,7 +632,11 @@ class TestRemoteListing:
         assert "contained_in" in all_branches_status(repo)["scratch"]
 
     def test_stale_ref_on_live_remote_is_gone(self, tmp_path: Path) -> None:
-        """A branch deleted on the remote but not yet pruned locally is `gone`."""
+        """A remote branch deleted but not yet pruned locally is `gone`.
+
+        That holds for a name-matched candidate too: it is reported as deleted,
+        not as if it never existed.
+        """
         repo = self._clone(tmp_path)
         repo.git.push("origin", "main:feature")
         repo.git.branch("--track", "feature", "origin/feature")
@@ -652,7 +657,7 @@ class TestRemoteListing:
                 "remote_deleted": "origin/feature",
                 "contained_in": "origin/main",
             },
-            "wip": {"no_remote": True},
+            "wip": {"remote_deleted": "origin/wip"},
         }
 
     def test_untracked_branch_on_dead_remote(self, tmp_path: Path) -> None:
@@ -671,6 +676,71 @@ class TestRemoteListing:
         )
         assert result["branches"] == {"wip": {"remote_unreachable": "dead/wip"}}
 
+    def _clone_with_backup_remote(self, tmp_path: Path) -> Repo:
+        """Clone, then push branch `wip` to both `origin` and a `backup` remote."""
+        repo = self._clone(tmp_path)
+        Repo.init(tmp_path / "backup", bare=True)
+        repo.create_remote("backup", str(tmp_path / "backup"))
+        repo.git.switch("-c", "wip")
+        self._commit(repo, "wip.txt")
+        repo.git.push("backup", "wip")
+        repo.git.push("origin", "wip")
+        repo.git.switch("main")
+        return repo
+
+    def test_lost_upstream_hints_other_remote(self, tmp_path: Path) -> None:
+        """A deleted upstream is reported, with the remote that still has it."""
+        repo = self._clone_with_backup_remote(tmp_path)
+        repo.git.branch("--set-upstream-to", "origin/wip", "wip")
+        Repo(tmp_path / "source").git.branch("-D", "wip")
+
+        result = repo_issues_in_branches(
+            repo, ScanOptions(slow=True), list_remotes(repo)
+        )
+        assert result["branches"] == {
+            "wip": {"remote_deleted": "origin/wip", "still_on": ["backup/wip"]}
+        }
+
+    def test_pruned_upstream_hints_other_remote(self, tmp_path: Path) -> None:
+        """Without `--slow`, a pruned upstream is hinted from local refs."""
+        repo = self._clone_with_backup_remote(tmp_path)
+        repo.git.branch("--set-upstream-to", "origin/wip", "wip")
+        repo.git.push("origin", "--delete", "wip")
+
+        assert repo_issues_in_branches(repo, ScanOptions())["branches"] == {
+            "wip": {"remote_deleted": "origin/wip", "still_on": ["backup/wip"]}
+        }
+
+    def test_lost_candidate_not_replaced(self, tmp_path: Path) -> None:
+        """A dead preferred candidate is reported, not swapped for a live one."""
+        repo = self._clone_with_backup_remote(tmp_path)
+        # origin comes first in the config, so its `origin/wip` is preferred
+        repo.git.remote("set-url", "origin", str(tmp_path / "deleted"))
+
+        result = repo_issues_in_branches(
+            repo, ScanOptions(slow=True), list_remotes(repo)
+        )
+        branches = result["branches"]
+        assert isinstance(branches, dict)
+        assert branches["wip"] == {
+            "remote_unreachable": "origin/wip",
+            "still_on": ["backup/wip"],
+        }
+
+    def test_listing_shared_by_worktrees(self, tmp_path: Path) -> None:
+        """The worktrees of one repo list its remotes only once per scan."""
+        repo = self._clone(tmp_path)
+        repo.git.worktree("add", str(tmp_path / "clone-wt"), "-b", "wt")
+        options = ScanOptions(slow=True)
+
+        with patch(
+            "git_folder_status.git_folder_status.list_remotes",
+            wraps=list_remotes,
+        ) as spy:
+            issues_for_one_folder(tmp_path / "clone", options)
+            issues_for_one_folder(tmp_path / "clone-wt", options)
+        assert spy.call_count == 1
+
     def test_live_remote_listing(self, tmp_path: Path) -> None:
         """A reachable remote lists its branches and tags, with no errors."""
         repo = self._clone(tmp_path)
@@ -680,6 +750,19 @@ class TestRemoteListing:
 
         assert remotes.errors == {}
         assert set(remotes.refs["origin"]) == {"refs/heads/main", "refs/tags/v1"}
+
+    def test_error_names_the_failure_line(self) -> None:
+        """A leading warning line is skipped in favor of the `fatal:` line."""
+        stderr = "Warning: Permanently added 'host'.\nfatal: Could not read from remote"
+        mock_repo = Mock(spec=Repo)
+        mock_remote = Mock()
+        mock_remote.name = "origin"
+        mock_repo.remotes = [mock_remote]
+        mock_repo.git.ls_remote.side_effect = GitCommandError(["git"], 128, stderr)
+
+        assert list_remotes(mock_repo).errors == {
+            "origin": "fatal: Could not read from remote"
+        }
 
     def test_listing_never_prompts(self) -> None:
         """`ls-remote` runs with terminal prompts off, so a login request fails."""
@@ -1149,8 +1232,7 @@ class TestIssuesForOneFolder:
                 "git status", 128, b"fatal: out of disk space"
             )
             result, identity = issues_for_one_folder(tmp_path, ScanOptions())
-        assert "error" in result
-        assert "out of disk space" in str(result["error"])
+        assert result == {"error": "git error: fatal: out of disk space"}
         assert identity is None
 
 
