@@ -294,7 +294,9 @@ class TestRepoStats:
         The git version is asked once per process, not once per repo.
         """
         repo = _init_repo_with_commit(tmp_path)
-        work_tree_status(_init_repo_with_commit(tmp_path / "other"))
+        # close it: GitPython's helper processes warn when garbage-collected
+        with _init_repo_with_commit(tmp_path / "other") as other:
+            work_tree_status(other)
 
         with self._spy_git_commands() as commands:
             work_tree_status(repo)
