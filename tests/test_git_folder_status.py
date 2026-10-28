@@ -32,6 +32,7 @@ from git_folder_status.git_folder_status import (
     shorten_dict,
     shorten_list,
     simplify_report,
+    work_tree_status,
 )
 
 
@@ -182,93 +183,144 @@ class TestFilterSubmoduleIssues:
 
 
 class TestRepoStats:
-    """Test repo_stats function."""
+    """Test repo_stats and the single `git status` call behind it."""
 
-    def test_repo_stats_normal(self) -> None:
-        """Test repo_stats with normal repo."""
-        mock_repo = Mock(spec=Repo)
-        mock_repo.bare = False
-        mock_repo.is_dirty.return_value = True
-        mock_repo.untracked_files = ["file1.txt", "file2.txt"]
-
-        mock_head = Mock()
-        mock_head.is_detached = False
-        mock_commit = Mock()
-        mock_commit.hexsha = "1234567890abcdef"
-        mock_head.commit = mock_commit
-        mock_repo.head = mock_head
-
-        mock_branch = Mock()
-        mock_branch.name = "main"
-        mock_repo.active_branch = mock_branch
-
-        mock_branches = [Mock(name="main", commit=Mock(hexsha="abc123"))]
-        mock_repo.branches = mock_branches
-
-        mock_remotes = [Mock(name="origin", urls=["git@github.com:user/repo.git"])]
-        mock_repo.remotes = mock_remotes
-
-        mock_repo.git.stash.return_value = "stash@{0}: WIP\nstash@{1}: changes"
-
-        result = repo_stats(mock_repo)
-
-        assert result["is_dirty"] is True
-        assert result["untracked_files"] == ["file1.txt", "file2.txt"]
-        assert result["is_detached_head"] is False
-        assert result["active_branch"] == "main"
-        assert result["head_commit_hash_short"] == "1234567"
-        assert result["stash_count"] == 2
-
-    def test_repo_stats_empty_repo(self) -> None:
-        """Test repo_stats with empty repo (no commits)."""
-        mock_repo = Mock(spec=Repo)
-        mock_repo.bare = False
-        mock_repo.is_dirty.return_value = False
-        mock_repo.untracked_files = []
-
-        mock_head = Mock()
-        mock_head.is_detached = False
-        # Simulate accessing .commit property that raises ValueError
-        type(mock_head).commit = PropertyMock(
-            side_effect=ValueError("Reference at 'HEAD' does not exist")
+    @staticmethod
+    def _git(repo: Repo, *args: str) -> None:
+        repo.git.execute(
+            ["git", "-c", "user.name=T", "-c", "user.email=t@e.com", *args]
         )
-        mock_repo.head = mock_head
 
-        mock_branch = Mock()
-        mock_branch.name = "main"
-        mock_repo.active_branch = mock_branch
+    def test_clean_repo(self, tmp_path: Path) -> None:
+        """A clean repo reports its branch and HEAD, with nothing to save."""
+        repo = _init_repo_with_commit(tmp_path)
+        repo.git.branch("-M", "main")
 
-        mock_repo.branches = []
-        mock_repo.remotes = []
-        mock_repo.git.stash.return_value = ""
+        result = repo_stats(repo)
 
-        result = repo_stats(mock_repo)
-
-        assert result["head_commit_hash_short"] is None
-
-    def test_repo_stats_bare_repo(self) -> None:
-        """Test that work-tree stats are skipped in a bare repo."""
-        mock_repo = Mock(spec=Repo)
-        mock_repo.bare = True
-        mock_repo.is_dirty.return_value = False
-
-        mock_head = Mock()
-        mock_head.is_detached = False
-        mock_head.commit = Mock(hexsha="1234567890abcdef")
-        mock_repo.head = mock_head
-
-        mock_repo.active_branch = Mock()
-        mock_repo.active_branch.name = "main"
-        mock_repo.branches = []
-        mock_repo.remotes = []
-
-        result = repo_stats(mock_repo)
-
-        assert result["bare"] is True
+        assert result["is_dirty"] is False
         assert result["untracked_files"] == []
         assert result["stash_count"] == 0
-        # the underlying git commands fail without a work tree
-        mock_repo.git.stash.assert_not_called()
+        assert result["is_detached_head"] is False
+        assert result["active_branch"] == "main"
+        assert result["head_commit_hash_short"] == repo.head.commit.hexsha[:7]
+
+    @pytest.mark.parametrize(
+        "change",
+        ["modified", "staged", "deleted", "renamed", "submodule"],
+    )
+    def test_changes_make_repo_dirty(self, tmp_path: Path, change: str) -> None:
+        """Staged, unstaged, renamed and submodule changes all count as dirty."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        readme = tmp_path / "repo" / "README.md"
+        if change == "modified":
+            readme.write_text("changed\n")
+        elif change == "staged":
+            readme.write_text("changed\n")
+            repo.index.add(["README.md"])
+        elif change == "deleted":
+            readme.unlink()
+        elif change == "renamed":
+            repo.git.mv("README.md", "new name.md")
+        else:
+            _init_repo_with_commit(tmp_path / "sub")
+            checkout = _add_submodule(repo, tmp_path / "sub", "sm")
+            (checkout / "README.md").write_text("changed\n")
+
+        assert work_tree_status(repo).is_dirty is True
+
+    def test_untracked_files_listed_one_by_one(self, tmp_path: Path) -> None:
+        """Files inside untracked dirs are listed, names kept verbatim."""
+        repo = _init_repo_with_commit(tmp_path)
+        (tmp_path / "dir" / "sub").mkdir(parents=True)
+        (tmp_path / "dir" / "sub" / "x y.txt").write_text("1")
+        (tmp_path / "ünï.txt").write_text("1")
+        (tmp_path / ".gitignore").write_text("*.log\n")
+        (tmp_path / "ignored.log").write_text("1")
+
+        status = work_tree_status(repo)
+
+        assert status.is_dirty is False
+        assert sorted(status.untracked_files) == [
+            ".gitignore",
+            "dir/sub/x y.txt",
+            "ünï.txt",
+        ]
+
+    def test_stash_count(self, tmp_path: Path) -> None:
+        """Each stash entry is counted."""
+        repo = _init_repo_with_commit(tmp_path)
+        for i in range(2):
+            (tmp_path / "README.md").write_text(f"{i}\n")
+            self._git(repo, "stash")
+
+        assert work_tree_status(repo).stash_count == 2
+
+    def test_detached_head(self, tmp_path: Path) -> None:
+        """A detached HEAD has no branch, and is checked for a containing ref."""
+        repo = _init_repo_with_commit(tmp_path)
+        repo.git.checkout("--detach")
+
+        result = repo_stats(repo)
+
+        assert result["is_detached_head"] is True
+        assert result["active_branch"] is None
+        assert result["detached_head_contained_in"] is not None
+
+    def test_merge_conflict_is_dirty(self, tmp_path: Path) -> None:
+        """Unmerged paths count as dirty."""
+        repo = _init_repo_with_commit(tmp_path)
+        readme = tmp_path / "README.md"
+        repo.git.switch("-c", "other")
+        readme.write_text("other\n")
+        self._git(repo, "commit", "-qam", "other")
+        repo.git.switch("-")
+        readme.write_text("mine\n")
+        self._git(repo, "commit", "-qam", "mine")
+        with pytest.raises(GitCommandError):
+            self._git(repo, "merge", "other")
+
+        assert work_tree_status(repo).is_dirty is True
+
+    def test_empty_repo(self, tmp_path: Path) -> None:
+        """A repo with no commits has no HEAD commit, but can be dirty."""
+        repo = Repo.init(tmp_path)
+        repo.git.symbolic_ref("HEAD", "refs/heads/main")
+        (tmp_path / "staged.txt").write_text("1")
+        repo.index.add(["staged.txt"])
+
+        result = repo_stats(repo)
+
+        assert result["head_commit_hash_short"] is None
+        assert result["active_branch"] == "main"
+        assert result["is_dirty"] is True
+
+    def test_bare_repo(self, tmp_path: Path) -> None:
+        """A bare repo skips work-tree stats, which need a work tree."""
+        _init_repo_with_commit(tmp_path / "src")
+        repo = Repo.clone_from(str(tmp_path / "src"), tmp_path / "bare", bare=True)
+
+        result = repo_stats(repo)
+
+        assert result["bare"] is True
+        assert result["is_dirty"] is False
+        assert result["untracked_files"] == []
+        assert result["stash_count"] == 0
+        assert result["head_commit_hash_short"] == repo.head.commit.hexsha[:7]
+
+    def test_empty_bare_repo(self, tmp_path: Path) -> None:
+        """A bare repo with no commits has no HEAD commit."""
+        repo = Repo.init(tmp_path, bare=True)
+
+        assert repo_stats(repo)["head_commit_hash_short"] is None
+
+    def test_detached_bare_repo(self, tmp_path: Path) -> None:
+        """A bare repo with a detached HEAD reports no branch."""
+        _init_repo_with_commit(tmp_path / "src")
+        repo = Repo.clone_from(str(tmp_path / "src"), tmp_path / "bare", bare=True)
+        repo.git.update_ref("--no-deref", "HEAD", repo.head.commit.hexsha)
+
+        assert repo_stats(repo)["active_branch"] is None
 
 
 class TestRepoIssuesInStats:
