@@ -681,6 +681,19 @@ class TestRemoteListing:
         assert remotes.errors == {}
         assert set(remotes.refs["origin"]) == {"refs/heads/main", "refs/tags/v1"}
 
+    def test_listing_never_prompts(self) -> None:
+        """`ls-remote` runs with terminal prompts off, so a login request fails."""
+        mock_repo = Mock(spec=Repo)
+        mock_remote = Mock()
+        mock_remote.name = "origin"
+        mock_repo.remotes = [mock_remote]
+        mock_repo.git.ls_remote.return_value = ""
+
+        list_remotes(mock_repo)
+
+        env = mock_repo.git.ls_remote.call_args.kwargs["env"]
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+
     def test_error_without_stderr(self) -> None:
         """A git failure with no stderr is still recorded, by its message."""
         mock_repo = Mock(spec=Repo)
