@@ -7,6 +7,7 @@ import pytest
 from git import Actor, GitCommandError, InvalidGitRepositoryError, Repo
 
 from git_folder_status.git_folder_status import (
+    BranchRef,
     RemoteListing,
     RepoIdentity,
     RepoStats,
@@ -22,6 +23,7 @@ from git_folder_status.git_folder_status import (
     is_orphaned_worktree,
     issues_for_all_subfolders,
     issues_for_one_folder,
+    list_branches,
     list_remotes,
     repo_issues_in_branches,
     repo_issues_in_stats,
@@ -317,30 +319,6 @@ class TestRepoIssuesInStats:
 class TestBranchStatus:
     """Test branch_status function."""
 
-    def test_no_tracking_branch(self) -> None:
-        """Test branch with no tracking branch."""
-        mock_repo = Mock(spec=Repo)
-        mock_repo.remotes = []
-        mock_branch = Mock()
-        mock_branch.commit.hexsha = "abc123"
-        mock_branch.tracking_branch.return_value = None
-
-        result = branch_status(mock_repo, mock_branch)
-        assert result == {"upstream": "missing", "head": "abc123"}
-
-    def test_local_tracking_branch(self) -> None:
-        """Test branch tracking a local branch."""
-        mock_repo = Mock(spec=Repo)
-        mock_repo.remotes = []
-        mock_branch = Mock()
-        mock_branch.commit.hexsha = "abc123"
-        mock_tracking = Mock()
-        mock_tracking.name = ".local_branch"
-        mock_branch.tracking_branch.return_value = mock_tracking
-
-        result = branch_status(mock_repo, mock_branch)
-        assert result == {"upstream": "missing", "head": "abc123"}
-
     @staticmethod
     def _repo_with_remote_refs(ref_names: list[str]) -> Mock:
         mock_repo = Mock(spec=Repo)
@@ -350,111 +328,119 @@ class TestBranchStatus:
         for ref_name in ref_names:
             mock_ref = Mock()
             mock_ref.name = ref_name
+            mock_ref.path = f"refs/remotes/{ref_name}"
             mock_remote.refs.append(mock_ref)
         mock_repo.remotes = [mock_remote]
-        mock_repo.iter_commits.return_value = iter([])
+        mock_repo.git.rev_list.return_value = "0\t0"
         # no push settings configured: every lookup falls back to its default
         mock_repo.config_reader = MagicMock()
         config = mock_repo.config_reader.return_value.__enter__.return_value
         config.get_value.side_effect = lambda _section, _option, default: default
         return mock_repo
 
+    def test_no_tracking_branch(self) -> None:
+        """Test branch with no tracking branch."""
+        mock_repo = self._repo_with_remote_refs([])
+
+        result = branch_status(mock_repo, BranchRef("feature", "abc123"))
+        assert result == {"upstream": "missing", "head": "abc123"}
+
     def test_no_tracking_branch_with_matching_remote(self) -> None:
         """Test branch pushed without `-u`: remote exists, no upstream set."""
         mock_repo = self._repo_with_remote_refs(["origin/user/feature"])
-        mock_branch = Mock()
-        mock_branch.name = "feature"
-        mock_branch.commit.hexsha = "abc123"
-        mock_branch.tracking_branch.return_value = None
+        mock_repo.git.rev_list.return_value = "2\t1"
 
-        result = branch_status(mock_repo, mock_branch)
+        result = branch_status(mock_repo, BranchRef("feature", "abc123"))
         assert result == {
             "upstream": "unset",
             "remote_branch": "origin/user/feature",
-            "ahead": 0,
-            "behind": 0,
+            "ahead": 2,
+            "behind": 1,
             "head": "abc123",
         }
+        mock_repo.git.rev_list.assert_called_once_with(
+            "--left-right",
+            "--count",
+            "refs/heads/feature...refs/remotes/origin/user/feature",
+        )
 
     def test_matching_remote_prefers_exact_name(self) -> None:
         """Test that `origin/feature` is preferred over prefixed variants."""
         mock_repo = self._repo_with_remote_refs(
             ["origin/user/feature", "origin/feature"]
         )
-        mock_branch = Mock()
-        mock_branch.name = "feature"
-        mock_branch.commit.hexsha = "abc123"
-        mock_branch.tracking_branch.return_value = None
 
-        result = branch_status(mock_repo, mock_branch)
+        result = branch_status(mock_repo, BranchRef("feature", "abc123"))
         assert result["remote_branch"] == "origin/feature"
 
     def test_matching_remote_requires_full_name_component(self) -> None:
         """Test that `origin/other-feature` does not match a local `feature`."""
         mock_repo = self._repo_with_remote_refs(["origin/other-feature"])
-        mock_branch = Mock()
-        mock_branch.name = "feature"
-        mock_branch.commit.hexsha = "abc123"
-        mock_branch.tracking_branch.return_value = None
 
-        result = branch_status(mock_repo, mock_branch)
+        result = branch_status(mock_repo, BranchRef("feature", "abc123"))
         assert result == {"upstream": "missing", "head": "abc123"}
 
     def test_missing_remote_branch(self) -> None:
         """Test branch tracking a missing remote branch."""
-        mock_repo = Mock(spec=Repo)
-        mock_branch = Mock()
-        mock_branch.name = "feature"
-        mock_branch.commit.hexsha = "abc123"
-        mock_tracking = Mock()
-        mock_tracking.name = "origin/feature"
-        mock_branch.tracking_branch.return_value = mock_tracking
+        mock_repo = self._repo_with_remote_refs([])
+        branch = BranchRef(
+            "feature", "abc123", "origin/feature", "origin", "feature", "gone"
+        )
 
-        mock_repo.refs = {}  # Remote branch doesn't exist
-        mock_repo.remotes = []
-
-        result = branch_status(mock_repo, mock_branch)
+        result = branch_status(mock_repo, branch)
         assert result == {
             "upstream": "gone",
             "remote_branch": "origin/feature",
             "head": "abc123",
         }
 
+    @pytest.mark.parametrize(
+        ("track", "ahead", "behind"),
+        [
+            ("", 0, 0),
+            ("ahead 2", 2, 0),
+            ("behind 3", 0, 3),
+            ("ahead 2, behind 3", 2, 3),
+        ],
+    )
+    def test_tracked_branch_counts(self, track: str, ahead: int, behind: int) -> None:
+        """Ahead/behind of a tracked branch come from git's own summary."""
+        mock_repo = self._repo_with_remote_refs([])
+        branch = BranchRef(
+            "feature", "abc123", "origin/feature", "origin", "feature", track
+        )
+
+        result = branch_status(mock_repo, branch)
+        assert result == {
+            "upstream": "set",
+            "remote_branch": "origin/feature",
+            "ahead": ahead,
+            "behind": behind,
+            "head": "abc123",
+        }
+        mock_repo.git.rev_list.assert_not_called()
+
     def test_feature_branch_tracking_default_branch(self) -> None:
         """A non-default branch tracking `origin/main` skips ahead/behind."""
-        mock_repo = Mock(spec=Repo)
-        mock_branch = Mock()
-        mock_branch.name = "feature"
-        mock_branch.commit.hexsha = "abc123"
-        mock_tracking = Mock()
-        mock_tracking.name = "origin/main"
-        mock_tracking.remote_head = "main"
-        mock_branch.tracking_branch.return_value = mock_tracking
-        mock_repo.refs = {"origin/main": Mock()}
+        mock_repo = self._repo_with_remote_refs([])
+        branch = BranchRef(
+            "feature", "abc123", "origin/main", "origin", "main", "ahead 1"
+        )
 
-        result = branch_status(mock_repo, mock_branch)
+        result = branch_status(mock_repo, branch)
         assert result == {
             "upstream": "default",
             "remote_branch": "origin/main",
             "head": "abc123",
         }
-        mock_repo.iter_commits.assert_not_called()
 
     @pytest.mark.parametrize("name", ["main", "master"])
     def test_default_branch_tracking_default_branch(self, name: str) -> None:
         """`main`/`master` tracking a remote main/master is a normal upstream."""
-        mock_repo = Mock(spec=Repo)
-        mock_branch = Mock()
-        mock_branch.name = name
-        mock_branch.commit.hexsha = "abc123"
-        mock_tracking = Mock()
-        mock_tracking.name = "origin/master"
-        mock_tracking.remote_head = "master"
-        mock_branch.tracking_branch.return_value = mock_tracking
-        mock_repo.refs = {"origin/master": Mock()}
-        mock_repo.iter_commits.return_value = iter([])
+        mock_repo = self._repo_with_remote_refs([])
+        branch = BranchRef(name, "abc123", "origin/master", "origin", "master")
 
-        result = branch_status(mock_repo, mock_branch)
+        result = branch_status(mock_repo, branch)
         assert result["upstream"] == "set"
 
     def test_feature_branch_tracking_default_branch_real_repo(
@@ -470,9 +456,40 @@ class TestBranchStatus:
         actor = Actor("Test", "test@example.com")
         repo.index.commit("work", author=actor, committer=actor)
 
-        result = branch_status(repo, repo.heads["feature"])
+        result = all_branches_status(repo)["feature"]
         assert result["upstream"] == "default"
         assert "ahead" not in result
+
+
+class TestListBranches:
+    """Test list_branches, the single git call behind branch statuses."""
+
+    def test_upstream_fields(self, tmp_path: Path) -> None:
+        """Each upstream kind is read from one `for-each-ref`."""
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        repo = Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+        actor = Actor("Test", "test@example.com")
+        repo.index.commit("ahead", author=actor, committer=actor)
+        repo.git.push("origin", "main:old")
+        repo.git.branch("--track", "old", "origin/old")
+        repo.git.push("origin", "--delete", "old")
+        repo.git.branch("plain")
+        repo.git.branch("--track", "on-local", "plain")
+        head = repo.head.commit.hexsha
+
+        branches = {b.name: b for b in list_branches(repo)}
+
+        assert branches == {
+            "main": BranchRef("main", head, "origin/main", "origin", "main", "ahead 1"),
+            "old": BranchRef("old", head, "origin/old", "origin", "old", "gone"),
+            "plain": BranchRef("plain", head),
+            "on-local": BranchRef("on-local", head),
+        }
+
+    def test_empty_repo(self, tmp_path: Path) -> None:
+        """A repo with no commits has no branches."""
+        assert list_branches(Repo.init(tmp_path)) == []
 
 
 class TestContainedInDefault:
@@ -755,7 +772,7 @@ class TestRemoteListing:
         for key, value in config.items():
             repo.git.config(key, value)
 
-        status = branch_status(repo, repo.heads["wip"])
+        status = all_branches_status(repo)["wip"]
         assert status["upstream"] == "unset"
         assert status["remote_branch"] == preferred
 
