@@ -199,12 +199,33 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
     return issues
 
 
+def _push_remote(repo: Repo, branch: Head) -> str:
+    """Return the remote that a plain `git push` sends `branch` to.
+
+    Follows git's own order: `branch.<name>.pushRemote`, `remote.pushDefault`,
+    `branch.<name>.remote`, then `origin`. Reads config only, no git call.
+    """
+    section = f'branch "{branch.name}"'
+    with repo.config_reader() as config:
+        for sec, option in (
+            (section, "pushRemote"),
+            ("remote", "pushDefault"),
+            (section, "remote"),
+        ):
+            value = config.get_value(sec, option, "")
+            if value:
+                return str(value)
+    return "origin"
+
+
 def _matching_remote_branches(repo: Repo, branch: Head) -> list[RemoteReference]:
     """Find the remote branches that match `branch` by name, preferred first.
 
     Catches branches that were pushed without `-u`:
     the remote branch exists, but no upstream is configured.
     Matches by name suffix, so `origin/user/feature` matches a local `feature`.
+    Preferred is `<push remote>/<branch>` on the remote `git push` would use,
+    then any `<remote>/<branch>`, then prefixed names, each in config order.
     """
     suffix = f"/{branch.name}"
     candidates = [
@@ -213,9 +234,14 @@ def _matching_remote_branches(repo: Repo, branch: Head) -> list[RemoteReference]
         for ref in remote.refs
         if ref.name.endswith(suffix)
     ]
-    # prefer the conventional `<remote>/<branch>` name over prefixed variants
+    if not candidates:
+        return []
+    pushed = f"{_push_remote(repo, branch)}{suffix}"
     exact_names = {f"{remote.name}{suffix}" for remote in repo.remotes}
-    return sorted(candidates, key=lambda ref: ref.name not in exact_names)
+    return sorted(
+        candidates,
+        key=lambda ref: (ref.name != pushed, ref.name not in exact_names),
+    )
 
 
 def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:

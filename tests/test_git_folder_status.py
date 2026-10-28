@@ -1,7 +1,7 @@
 """Tests for git_folder_status module."""
 
 from pathlib import Path
-from unittest.mock import Mock, PropertyMock, patch
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import pytest
 from git import Actor, GitCommandError, InvalidGitRepositoryError, Repo
@@ -353,6 +353,10 @@ class TestBranchStatus:
             mock_remote.refs.append(mock_ref)
         mock_repo.remotes = [mock_remote]
         mock_repo.iter_commits.return_value = iter([])
+        # no push settings configured: every lookup falls back to its default
+        mock_repo.config_reader = MagicMock()
+        config = mock_repo.config_reader.return_value.__enter__.return_value
+        config.get_value.side_effect = lambda _section, _option, default: default
         return mock_repo
 
     def test_no_tracking_branch_with_matching_remote(self) -> None:
@@ -726,6 +730,34 @@ class TestRemoteListing:
             "remote_unreachable": "origin/wip",
             "still_on": ["backup/wip"],
         }
+
+    @pytest.mark.parametrize(
+        ("config", "preferred"),
+        [
+            ({}, "origin/wip"),
+            ({"remote.pushDefault": "backup"}, "backup/wip"),
+            (
+                {"remote.pushDefault": "origin", "branch.wip.pushRemote": "backup"},
+                "backup/wip",
+            ),
+            ({"branch.wip.remote": "backup"}, "backup/wip"),
+        ],
+    )
+    def test_candidate_on_push_remote_preferred(
+        self, tmp_path: Path, config: dict[str, str], preferred: str
+    ) -> None:
+        """The name-matched candidate is the one `git push` would update."""
+        repo = self._clone_with_backup_remote(tmp_path)
+        # list backup first, so config order alone would pick it
+        repo.git.remote("rename", "origin", "tmp")
+        repo.git.remote("rename", "backup", "origin")
+        repo.git.remote("rename", "tmp", "backup")
+        for key, value in config.items():
+            repo.git.config(key, value)
+
+        status = branch_status(repo, repo.heads["wip"])
+        assert status["upstream"] == "unset"
+        assert status["remote_branch"] == preferred
 
     def test_listing_shared_by_worktrees(self, tmp_path: Path) -> None:
         """The worktrees of one repo list its remotes only once per scan."""
