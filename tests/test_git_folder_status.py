@@ -1,10 +1,12 @@
 """Tests for git_folder_status module."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import pytest
-from git import Actor, GitCommandError, InvalidGitRepositoryError, Repo
+from git import Actor, Git, GitCommandError, InvalidGitRepositoryError, Repo
 
 from git_folder_status.git_folder_status import (
     BranchRef,
@@ -191,6 +193,20 @@ class TestRepoStats:
             ["git", "-c", "user.name=T", "-c", "user.email=t@e.com", *args]
         )
 
+    @staticmethod
+    @contextmanager
+    def _spy_git_commands() -> Iterator[Mock]:
+        """Record every `repo.git.<command>(...)` call, still running it."""
+        # every `repo.git.<command>` goes through GitPython's private dispatch
+        real = Git._call_process  # noqa: SLF001
+        with patch.object(Git, "_call_process", autospec=True, side_effect=real) as spy:
+            yield spy
+
+    @staticmethod
+    def _names(spy: Mock) -> list[str]:
+        """Return the git command names a `_spy_git_commands` spy saw."""
+        return [c.args[1] for c in spy.call_args_list]
+
     def test_clean_repo(self, tmp_path: Path) -> None:
         """A clean repo reports its branch and HEAD, with nothing to save."""
         repo = _init_repo_with_commit(tmp_path)
@@ -255,6 +271,34 @@ class TestRepoStats:
             self._git(repo, "stash")
 
         assert work_tree_status(repo).stash_count == 2
+
+    def test_stash_count_on_old_git(self, tmp_path: Path) -> None:
+        """Git before 2.35 omits the stash count, so it is listed instead."""
+        repo = _init_repo_with_commit(tmp_path)
+        (tmp_path / "README.md").write_text("changed\n")
+        self._git(repo, "stash")
+
+        with (
+            patch(
+                "git_folder_status.git_folder_status._git_version",
+                return_value=(2, 34, 1),
+            ),
+            self._spy_git_commands() as commands,
+        ):
+            assert work_tree_status(repo).stash_count == 1
+        assert "stash" in self._names(commands)
+
+    def test_stash_not_listed_on_current_git(self, tmp_path: Path) -> None:
+        """From git 2.35 the stash count comes from `git status` alone.
+
+        The git version is asked once per process, not once per repo.
+        """
+        repo = _init_repo_with_commit(tmp_path)
+        work_tree_status(_init_repo_with_commit(tmp_path / "other"))
+
+        with self._spy_git_commands() as commands:
+            work_tree_status(repo)
+        assert self._names(commands) == ["status"]
 
     def test_detached_head(self, tmp_path: Path) -> None:
         """A detached HEAD has no branch, and is checked for a containing ref."""

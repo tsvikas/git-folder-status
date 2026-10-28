@@ -6,13 +6,14 @@ all Git repositories found within.
 Run `git-folder-status -h` for help.
 """
 
+import functools
 import sys
 from collections import ChainMap
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from git import GitCommandError, InvalidGitRepositoryError, Repo
+from git import Git, GitCommandError, InvalidGitRepositoryError, Repo
 from git.refs.remote import RemoteReference
 
 IGNORED_FILENAMES = [".DS_Store"]
@@ -235,6 +236,21 @@ class WorkTreeStatus:
     stash_count: int
 
 
+# `git status --porcelain=v2 --show-stash` reports the stash count from 2.35 on;
+# older git prints nothing, which would hide stashed work as "no stash"
+_STATUS_SHOWS_STASH = (2, 35)
+
+
+@functools.cache
+def _git_version() -> tuple[int, ...]:
+    """Return the git version, asked once per process.
+
+    GitPython caches `version_info` per `Repo`, which costs a `git version`
+    call for every scanned repo.
+    """
+    return Git().version_info
+
+
 def work_tree_status(repo: Repo) -> WorkTreeStatus:
     """Return HEAD, changes, untracked files and stash count in one git call.
 
@@ -266,6 +282,8 @@ def work_tree_status(repo: Repo) -> WorkTreeStatus:
                 next(records)  # a rename's original path is a record of its own
         elif kind == "?":
             untracked.append(rest)
+    if _git_version() < _STATUS_SHOWS_STASH:
+        stash_count = len(repo.git.stash("list").splitlines())
     return WorkTreeStatus(head, branch, is_dirty, untracked, stash_count)
 
 
