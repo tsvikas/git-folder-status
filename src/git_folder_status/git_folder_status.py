@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from git import GitCommandError, InvalidGitRepositoryError, Repo
-from git.refs.head import Head
 from git.refs.remote import RemoteReference
 
 IGNORED_FILENAMES = [".DS_Store"]
@@ -114,13 +113,78 @@ class RemoteListing:
     refs: dict[str, dict[str, str]]
     errors: dict[str, str]
 
-    def ref_state(self, ref: RemoteReference) -> str:
-        """Return `unreachable`, `gone` or `ok` for a remote-tracking ref."""
-        if ref.remote_name in self.errors:
+    def ref_state(self, remote: str, remote_head: str) -> str:
+        """Return `unreachable`, `gone` or `ok` for branch `remote_head` on `remote`."""
+        if remote in self.errors:
             return "unreachable"
-        if f"refs/heads/{ref.remote_head}" not in self.refs.get(ref.remote_name, {}):
+        if f"refs/heads/{remote_head}" not in self.refs.get(remote, {}):
             return "gone"
         return "ok"
+
+    def tracking_ref_state(self, ref: RemoteReference) -> str:
+        """Return `ref_state` for a local remote-tracking ref."""
+        return self.ref_state(ref.remote_name, ref.remote_head)
+
+
+@dataclass(frozen=True)
+class BranchRef:
+    """A local branch and its upstream, as one `git for-each-ref` reports them.
+
+    `upstream` is the short remote-tracking ref (`origin/feature`), empty when
+    no upstream is configured or it is a local branch. `remote` and
+    `remote_head` name the branch on that remote. `track` is git's own
+    `ahead N, behind M` summary of the branch against its upstream, or `gone`.
+    """
+
+    name: str
+    head: str
+    upstream: str = ""
+    remote: str = ""
+    remote_head: str = ""
+    track: str = ""
+
+
+# fields separated by NUL (`%00`), which no ref name can contain
+_BRANCH_FORMAT = (
+    "%(refname)%00"
+    "%(objectname)%00"
+    "%(upstream)%00"
+    "%(upstream:remotename)%00"
+    "%(upstream:remoteref)%00"
+    "%(upstream:track,nobracket)"
+)
+
+
+def list_branches(repo: Repo) -> list[BranchRef]:
+    """Return every local branch with its upstream, in one git call."""
+    out = repo.git.for_each_ref(f"--format={_BRANCH_FORMAT}", "refs/heads")
+    branches = []
+    for line in out.splitlines():
+        refname, head, upstream, remote, remote_ref, track = line.split("\0")
+        # an upstream outside refs/remotes/ is a local branch, not a remote
+        if not upstream.startswith("refs/remotes/"):
+            upstream = remote = remote_ref = track = ""
+        branches.append(
+            BranchRef(
+                name=refname.removeprefix("refs/heads/"),
+                head=head,
+                upstream=upstream.removeprefix("refs/remotes/"),
+                remote=remote,
+                remote_head=remote_ref.removeprefix("refs/heads/"),
+                track=track,
+            )
+        )
+    return branches
+
+
+def _parse_track(track: str) -> tuple[int, int]:
+    """Return (ahead, behind) from git's `ahead N, behind M` summary."""
+    counts = {"ahead": 0, "behind": 0}
+    for part in track.split(", "):
+        if part:
+            key, count = part.split(" ")
+            counts[key] = int(count)
+    return counts["ahead"], counts["behind"]
 
 
 # namespaces searched for a ref holding a detached HEAD, most informative first:
@@ -199,13 +263,13 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
     return issues
 
 
-def _push_remote(repo: Repo, branch: Head) -> str:
+def _push_remote(repo: Repo, branch: str) -> str:
     """Return the remote that a plain `git push` sends `branch` to.
 
     Follows git's own order: `branch.<name>.pushRemote`, `remote.pushDefault`,
     `branch.<name>.remote`, then `origin`. Reads config only, no git call.
     """
-    section = f'branch "{branch.name}"'
+    section = f'branch "{branch}"'
     with repo.config_reader() as config:
         for sec, option in (
             (section, "pushRemote"),
@@ -218,7 +282,7 @@ def _push_remote(repo: Repo, branch: Head) -> str:
     return "origin"
 
 
-def _matching_remote_branches(repo: Repo, branch: Head) -> list[RemoteReference]:
+def _matching_remote_branches(repo: Repo, branch: str) -> list[RemoteReference]:
     """Find the remote branches that match `branch` by name, preferred first.
 
     Catches branches that were pushed without `-u`:
@@ -227,7 +291,7 @@ def _matching_remote_branches(repo: Repo, branch: Head) -> list[RemoteReference]
     Preferred is `<push remote>/<branch>` on the remote `git push` would use,
     then any `<remote>/<branch>`, then prefixed names, each in config order.
     """
-    suffix = f"/{branch.name}"
+    suffix = f"/{branch}"
     candidates = [
         ref
         for remote in repo.remotes
@@ -246,26 +310,26 @@ def _matching_remote_branches(repo: Repo, branch: Head) -> list[RemoteReference]
 
 def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
     """Return (ahead, behind): commits on `local` not on `remote`, and vice versa."""
-    behind = len(list(repo.iter_commits(f"{local}..{remote}")))
-    ahead = len(list(repo.iter_commits(f"{remote}..{local}")))
-    return ahead, behind
+    out = repo.git.rev_list("--left-right", "--count", f"{local}...{remote}")
+    ahead, behind = out.split()
+    return int(ahead), int(behind)
 
 
 def _untracked_branch_status(
-    repo: Repo, branch: Head, remotes: RemoteListing | None
+    repo: Repo, branch: BranchRef, remotes: RemoteListing | None
 ) -> RepoStats:
     """Return the status of a branch with no upstream configured."""
-    head = branch.commit.hexsha
+    head = branch.head
     # no upstream configured, but the branch may still exist on a remote
-    candidates = _matching_remote_branches(repo, branch)
+    candidates = _matching_remote_branches(repo, branch.name)
     if not candidates:
         return {"upstream": "missing", "head": head}
     # the preferred candidate stands in for the upstream: when it is lost,
     # that is reported, not hidden by falling back to another remote
     matching = candidates[0]
-    if remotes is not None and (state := remotes.ref_state(matching)) != "ok":
+    if remotes is not None and (state := remotes.tracking_ref_state(matching)) != "ok":
         return {"upstream": state, "remote_branch": matching.name, "head": head}
-    ahead, behind = _ahead_behind(repo, branch.name, matching.name)
+    ahead, behind = _ahead_behind(repo, f"refs/heads/{branch.name}", matching.path)
     return {
         "upstream": "unset",
         "remote_branch": matching.name,
@@ -276,13 +340,14 @@ def _untracked_branch_status(
 
 
 def _still_on(
-    repo: Repo, branch: Head, lost: str, remotes: RemoteListing | None
+    repo: Repo, branch: str, lost: str, remotes: RemoteListing | None
 ) -> list[str]:
     """Return the other remote branches matching `branch` that still exist."""
     return [
         ref.name
         for ref in _matching_remote_branches(repo, branch)
-        if ref.name != lost and (remotes is None or remotes.ref_state(ref) == "ok")
+        if ref.name != lost
+        and (remotes is None or remotes.tracking_ref_state(ref) == "ok")
     ]
 
 
@@ -291,7 +356,7 @@ _LOST_STATES = frozenset({"gone", "unreachable"})
 
 
 def branch_status(
-    repo: Repo, branch: Head, remotes: RemoteListing | None = None
+    repo: Repo, branch: BranchRef, remotes: RemoteListing | None = None
 ) -> RepoStats:
     """Return the upstream relationship of a single branch.
 
@@ -324,32 +389,33 @@ def branch_status(
     if status["upstream"] in _LOST_STATES:
         lost = status["remote_branch"]
         assert isinstance(lost, str)  # noqa: S101
-        still_on = _still_on(repo, branch, lost, remotes)
+        still_on = _still_on(repo, branch.name, lost, remotes)
         if still_on:
             status["still_on"] = still_on
     return status
 
 
 def _branch_status(
-    repo: Repo, branch: Head, remotes: RemoteListing | None
+    repo: Repo, branch: BranchRef, remotes: RemoteListing | None
 ) -> RepoStats:
     """Return a branch's upstream state, without the `still_on` hint."""
-    head = branch.commit.hexsha
-    tracking_branch = branch.tracking_branch()
-    # a tracking name starting with "." means tracking a local branch
-    if tracking_branch is None or tracking_branch.name[0] == ".":
+    head = branch.head
+    if not branch.upstream:
         return _untracked_branch_status(repo, branch, remotes)
-    remote_branch = tracking_branch.name
-    if remote_branch not in repo.refs:
+    remote_branch = branch.upstream
+    if branch.track == "gone":
         return {"upstream": "gone", "remote_branch": remote_branch, "head": head}
-    if remotes is not None and (state := remotes.ref_state(tracking_branch)) != "ok":
+    if (
+        remotes is not None
+        and (state := remotes.ref_state(branch.remote, branch.remote_head)) != "ok"
+    ):
         return {"upstream": state, "remote_branch": remote_branch, "head": head}
     if (
-        tracking_branch.remote_head in DEFAULT_BRANCH_NAMES
+        branch.remote_head in DEFAULT_BRANCH_NAMES
         and branch.name not in DEFAULT_BRANCH_NAMES
     ):
         return {"upstream": "default", "remote_branch": remote_branch, "head": head}
-    ahead, behind = _ahead_behind(repo, branch.name, remote_branch)
+    ahead, behind = _parse_track(branch.track)
     return {
         "upstream": "set",
         "remote_branch": remote_branch,
@@ -418,7 +484,7 @@ def _contained_in_default(
         for ref in remote.refs:
             if ref.remote_head not in DEFAULT_BRANCH_NAMES:
                 continue
-            if remotes is not None and remotes.ref_state(ref) != "ok":
+            if remotes is not None and remotes.tracking_ref_state(ref) != "ok":
                 continue
             out = repo.git.for_each_ref(
                 "--merged", ref.name, "--format=%(refname)", "refs/heads"
@@ -442,7 +508,7 @@ def all_branches_status(
     remote main/master carries a `contained_in` field naming that ref: it has
     no commits of its own, so deleting it loses nothing.
     """
-    branches = [b for b in repo.branches if not b.name.startswith("gitbutler/")]
+    branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
         return {}
     checkouts = _worktree_branches(repo)
