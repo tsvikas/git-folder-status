@@ -60,6 +60,10 @@ git-folder-status /path/to/code/directory
 
 Use `git-folder-status --help` to learn more.
 
+Anything that could lose work (uncommitted, unpushed, or not on any remote) is
+always reported. `--all` only adds context that is not an issue, and `--slow`
+adds checks that need the network, such as remote tags and unreachable remotes.
+
 ## Contributing
 
 Interested in contributing?

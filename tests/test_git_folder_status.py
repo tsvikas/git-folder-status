@@ -315,6 +315,18 @@ class TestRepoIssuesInStats:
             # With include_all=True, should include more fields
             assert "branches" in result
 
+    def test_remote_urls_only_read_under_all(self, tmp_path: Path) -> None:
+        """Remote URLs cost a git call each and are only listed under --all."""
+        repo = _init_repo_with_commit(tmp_path)
+        repo.create_remote("origin", "https://example.com/repo.git")
+
+        with patch("git.remote.Remote.urls", new_callable=PropertyMock) as mock_urls:
+            mock_urls.return_value = iter(["https://example.com/repo.git"])
+            assert "remotes" not in repo_issues_in_stats(repo, ScanOptions())
+            mock_urls.assert_not_called()
+            result = repo_issues_in_stats(repo, ScanOptions(include_all=True))
+        assert result["remotes"] == {"origin": ["https://example.com/repo.git"]}
+
 
 class TestBranchStatus:
     """Test branch_status function."""
@@ -1173,6 +1185,15 @@ class TestRepoIssuesInBranches:
 
 class TestRepoIssuesInTags:
     """Test repo_issues_in_tags function."""
+
+    def test_tags_not_resolved_by_default(self) -> None:
+        """Without --all or --slow, no tag is read: nothing would use it."""
+        mock_repo = Mock(spec=Repo)
+        tags = PropertyMock(return_value=[])
+        type(mock_repo).tags = tags
+
+        assert repo_issues_in_tags(mock_repo, ScanOptions()) == {}
+        tags.assert_not_called()
 
     def test_include_all_local_tags(self) -> None:
         """Test include_all flag includes local tags."""
