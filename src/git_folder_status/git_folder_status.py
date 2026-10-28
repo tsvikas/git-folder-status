@@ -9,7 +9,7 @@ Run `git-folder-status -h` for help.
 import sys
 from collections import ChainMap
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from git import GitCommandError, InvalidGitRepositoryError, Repo
@@ -49,6 +49,7 @@ SHARED_REPO_KEYS = frozenset(
     {
         "stash_count",
         "remotes",
+        "remotes_unreachable",
         "branches",
         "local_tags",
         "tags_local_only",
@@ -61,14 +62,21 @@ SHARED_REPO_KEYS = frozenset(
 class ScanOptions:
     """Flags controlling how each repo is analyzed, threaded through the scan.
 
-    `slow` allows expensive operations (remote tag comparison). `include_all`
+    `slow` allows expensive operations: listing each remote over the network,
+    to compare tags and to check that remote branches still exist. `include_all`
     reports context beyond issues. `include_behind` keeps branches that are
     only behind their upstream.
+
+    `remote_listings` caches each repo's `RemoteListing` by its common git
+    dir, so the worktrees of one repo share a single round of network calls.
     """
 
     slow: bool = False
     include_all: bool = False
     include_behind: bool = False
+    remote_listings: dict[Path, "RemoteListing"] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,28 @@ class RepoIdentity:
 
 
 DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
+
+
+@dataclass(frozen=True)
+class RemoteListing:
+    """The refs each remote actually holds, as `git ls-remote` reports them.
+
+    Local `refs/remotes/*` only cache the last fetch: a branch deleted on the
+    remote, or a remote that no longer exists, still looks pushed. `refs` maps
+    each listed remote to its `{refname: sha}`; `errors` maps each remote that
+    could not be listed to git's error message.
+    """
+
+    refs: dict[str, dict[str, str]]
+    errors: dict[str, str]
+
+    def ref_state(self, ref: RemoteReference) -> str:
+        """Return `unreachable`, `gone` or `ok` for a remote-tracking ref."""
+        if ref.remote_name in self.errors:
+            return "unreachable"
+        if f"refs/heads/{ref.remote_head}" not in self.refs.get(ref.remote_name, {}):
+            return "gone"
+        return "ok"
 
 
 # namespaces searched for a ref holding a detached HEAD, most informative first:
@@ -169,12 +199,33 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
     return issues
 
 
-def _matching_remote_branch(repo: Repo, branch: Head) -> RemoteReference | None:
-    """Find a remote branch that matches `branch` by name.
+def _push_remote(repo: Repo, branch: Head) -> str:
+    """Return the remote that a plain `git push` sends `branch` to.
+
+    Follows git's own order: `branch.<name>.pushRemote`, `remote.pushDefault`,
+    `branch.<name>.remote`, then `origin`. Reads config only, no git call.
+    """
+    section = f'branch "{branch.name}"'
+    with repo.config_reader() as config:
+        for sec, option in (
+            (section, "pushRemote"),
+            ("remote", "pushDefault"),
+            (section, "remote"),
+        ):
+            value = config.get_value(sec, option, "")
+            if value:
+                return str(value)
+    return "origin"
+
+
+def _matching_remote_branches(repo: Repo, branch: Head) -> list[RemoteReference]:
+    """Find the remote branches that match `branch` by name, preferred first.
 
     Catches branches that were pushed without `-u`:
     the remote branch exists, but no upstream is configured.
     Matches by name suffix, so `origin/user/feature` matches a local `feature`.
+    Preferred is `<push remote>/<branch>` on the remote `git push` would use,
+    then any `<remote>/<branch>`, then prefixed names, each in config order.
     """
     suffix = f"/{branch.name}"
     candidates = [
@@ -184,11 +235,13 @@ def _matching_remote_branch(repo: Repo, branch: Head) -> RemoteReference | None:
         if ref.name.endswith(suffix)
     ]
     if not candidates:
-        return None
-    # prefer the conventional `<remote>/<branch>` name over prefixed variants
+        return []
+    pushed = f"{_push_remote(repo, branch)}{suffix}"
     exact_names = {f"{remote.name}{suffix}" for remote in repo.remotes}
-    exact = [ref for ref in candidates if ref.name in exact_names]
-    return (exact or candidates)[0]
+    return sorted(
+        candidates,
+        key=lambda ref: (ref.name != pushed, ref.name not in exact_names),
+    )
 
 
 def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
@@ -198,10 +251,54 @@ def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
     return ahead, behind
 
 
-def branch_status(repo: Repo, branch: Head) -> RepoStats:
+def _untracked_branch_status(
+    repo: Repo, branch: Head, remotes: RemoteListing | None
+) -> RepoStats:
+    """Return the status of a branch with no upstream configured."""
+    head = branch.commit.hexsha
+    # no upstream configured, but the branch may still exist on a remote
+    candidates = _matching_remote_branches(repo, branch)
+    if not candidates:
+        return {"upstream": "missing", "head": head}
+    # the preferred candidate stands in for the upstream: when it is lost,
+    # that is reported, not hidden by falling back to another remote
+    matching = candidates[0]
+    if remotes is not None and (state := remotes.ref_state(matching)) != "ok":
+        return {"upstream": state, "remote_branch": matching.name, "head": head}
+    ahead, behind = _ahead_behind(repo, branch.name, matching.name)
+    return {
+        "upstream": "unset",
+        "remote_branch": matching.name,
+        "ahead": ahead,
+        "behind": behind,
+        "head": head,
+    }
+
+
+def _still_on(
+    repo: Repo, branch: Head, lost: str, remotes: RemoteListing | None
+) -> list[str]:
+    """Return the other remote branches matching `branch` that still exist."""
+    return [
+        ref.name
+        for ref in _matching_remote_branches(repo, branch)
+        if ref.name != lost and (remotes is None or remotes.ref_state(ref) == "ok")
+    ]
+
+
+# upstream states whose remote branch is lost: another remote may still hold it
+_LOST_STATES = frozenset({"gone", "unreachable"})
+
+
+def branch_status(
+    repo: Repo, branch: Head, remotes: RemoteListing | None = None
+) -> RepoStats:
     """Return the upstream relationship of a single branch.
 
-    The `upstream` field discriminates five mutually exclusive states:
+    A branch in a `_LOST_STATES` state carries a `still_on` list when other
+    remotes hold a branch of the same name: a hint that its work may be safe.
+
+    The `upstream` field discriminates six mutually exclusive states:
 
     - `set`: a real upstream is configured and its remote ref exists.
     - `unset`: no upstream configured, but a remote branch matches by name
@@ -214,26 +311,39 @@ def branch_status(repo: Repo, branch: Head) -> RepoStats:
       Its ahead/behind counts would only measure drift from the default
       branch, not unpushed work, so they are not computed.
     - `missing`: local-only, no upstream and no matching remote branch.
+    - `unreachable`: the remote holding the upstream (or the name-matched
+      candidate) could not be listed, so the local remote-tracking ref may be
+      stale. Ahead/behind counts against it are not computed.
+
+    Only a `remotes` listing (a network call, under `--slow`) can tell
+    `unreachable` apart, and tell a stale remote-tracking ref from a live one:
+    with it, a ref the remote no longer holds counts as `gone`. A name-matched
+    candidate is checked the same way, as if it were the upstream.
     """
+    status = _branch_status(repo, branch, remotes)
+    if status["upstream"] in _LOST_STATES:
+        lost = status["remote_branch"]
+        assert isinstance(lost, str)  # noqa: S101
+        still_on = _still_on(repo, branch, lost, remotes)
+        if still_on:
+            status["still_on"] = still_on
+    return status
+
+
+def _branch_status(
+    repo: Repo, branch: Head, remotes: RemoteListing | None
+) -> RepoStats:
+    """Return a branch's upstream state, without the `still_on` hint."""
     head = branch.commit.hexsha
     tracking_branch = branch.tracking_branch()
     # a tracking name starting with "." means tracking a local branch
     if tracking_branch is None or tracking_branch.name[0] == ".":
-        # no upstream configured, but the branch may still exist on a remote
-        matching = _matching_remote_branch(repo, branch)
-        if matching is None:
-            return {"upstream": "missing", "head": head}
-        ahead, behind = _ahead_behind(repo, branch.name, matching.name)
-        return {
-            "upstream": "unset",
-            "remote_branch": matching.name,
-            "ahead": ahead,
-            "behind": behind,
-            "head": head,
-        }
+        return _untracked_branch_status(repo, branch, remotes)
     remote_branch = tracking_branch.name
     if remote_branch not in repo.refs:
         return {"upstream": "gone", "remote_branch": remote_branch, "head": head}
+    if remotes is not None and (state := remotes.ref_state(tracking_branch)) != "ok":
+        return {"upstream": state, "remote_branch": remote_branch, "head": head}
     if (
         tracking_branch.remote_head in DEFAULT_BRANCH_NAMES
         and branch.name not in DEFAULT_BRANCH_NAMES
@@ -290,19 +400,25 @@ def _worktree_branches(repo: Repo) -> dict[str, str]:
 
 # upstream states with no usable ahead count, so containment in a remote
 # default branch is the only sign of whether the branch holds unique work
-_CONTAINMENT_STATES = frozenset({"missing", "gone", "default"})
+_CONTAINMENT_STATES = frozenset({"missing", "gone", "default", "unreachable"})
 
 
-def _contained_in_default(repo: Repo) -> dict[str, str]:
+def _contained_in_default(
+    repo: Repo, remotes: RemoteListing | None = None
+) -> dict[str, str]:
     """Map each local branch to a remote main/master that contains its head.
 
     Runs one `git for-each-ref --merged` per remote default branch, not one
-    query per local branch. The first containing ref wins.
+    query per local branch. The first containing ref wins. With a `remotes`
+    listing, a main/master the remote no longer holds (or an unreachable
+    remote's) does not count: being contained in it keeps nothing safe.
     """
     contained: dict[str, str] = {}
     for remote in repo.remotes:
         for ref in remote.refs:
             if ref.remote_head not in DEFAULT_BRANCH_NAMES:
+                continue
+            if remotes is not None and remotes.ref_state(ref) != "ok":
                 continue
             out = repo.git.for_each_ref(
                 "--merged", ref.name, "--format=%(refname)", "refs/heads"
@@ -312,7 +428,9 @@ def _contained_in_default(repo: Repo) -> dict[str, str]:
     return contained
 
 
-def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
+def all_branches_status(
+    repo: Repo, remotes: RemoteListing | None = None
+) -> dict[str, RepoStats]:
     """Return the upstream status of all branches in a repo.
 
     A branch checked out in some *other* worktree carries a `worktree` field
@@ -331,14 +449,14 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
     own = Path(repo.working_dir).resolve().as_posix() if repo.working_dir else None
     result: dict[str, RepoStats] = {}
     for branch in branches:
-        status = branch_status(repo, branch)
+        status = branch_status(repo, branch, remotes)
         worktree = checkouts.get(branch.name)
         if worktree is not None and worktree != own:
             status["worktree"] = worktree
         result[branch.name] = status
     # skip the git calls when no branch can use the answer
     if any(st["upstream"] in _CONTAINMENT_STATES for st in result.values()):
-        contained = _contained_in_default(repo)
+        contained = _contained_in_default(repo, remotes)
         for name, status in result.items():
             if status["upstream"] in _CONTAINMENT_STATES and name in contained:
                 status["contained_in"] = contained[name]
@@ -347,7 +465,8 @@ def all_branches_status(repo: Repo) -> dict[str, RepoStats]:
 
 def _branch_has_issue(status: RepoStats, *, include_behind: bool) -> bool:
     """Whether a branch's upstream status is worth reporting."""
-    # any non-`set` upstream state (missing/unset/gone/default) is itself the issue
+    # any non-`set` upstream state (missing/unset/gone/default/unreachable) is
+    # itself the issue
     if status["upstream"] != "set":
         return True
     if status.get("ahead"):
@@ -359,6 +478,7 @@ def _branch_has_issue(status: RepoStats, *, include_behind: bool) -> bool:
 _REMOTE_BRANCH_ISSUE_KEYS = {
     "gone": "remote_deleted",
     "default": "tracks_default_branch",
+    "unreachable": "remote_unreachable",
 }
 
 
@@ -400,6 +520,8 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
     if status.get("contained_in"):
         # qualifies the upstream issue: no commits would be lost
         record["contained_in"] = status["contained_in"]
+    if status.get("still_on"):
+        record["still_on"] = status["still_on"]
     # remote_branch and head are context, not issue triggers: attach them only
     # under --all, so they never keep a clean branch in the regular report.
     if include_all:
@@ -409,9 +531,11 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
     return record
 
 
-def repo_issues_in_branches(repo: Repo, options: ScanOptions) -> RepoStats:
+def repo_issues_in_branches(
+    repo: Repo, options: ScanOptions, remotes: RemoteListing | None = None
+) -> RepoStats:
     """Return per-branch upstream issues, keyed under `branches`."""
-    branches_st = all_branches_status(repo)
+    branches_st = all_branches_status(repo, remotes)
     branches: RepoStats = {}
     for name, status in branches_st.items():
         if not options.include_all and not _branch_has_issue(
@@ -429,31 +553,69 @@ def repo_issues_in_branches(repo: Repo, options: ScanOptions) -> RepoStats:
     return {"branches": branches} if branches else {}
 
 
-def _remote_tags(repo: Repo, remote_name: str) -> dict[str, str]:
-    """Map each tag ref to its commit sha, as reported by `git ls-remote`."""
+def _remote_refs(repo: Repo, remote_name: str) -> dict[str, str]:
+    """Map each branch and tag ref of a remote to its sha, per `git ls-remote`."""
     # ls_remote's typed overload widens the result to str | bytes | tuple | ...;
     # the plain (no with_extended_output) call always yields str.
-    out = repo.git.ls_remote("--tags", remote_name)
+    # GIT_TERMINAL_PROMPT=0: a dead https remote often asks for a login, which
+    # would stall the scan; without a prompt it fails and is reported instead.
+    out = repo.git.ls_remote(
+        "--heads", "--tags", remote_name, env={"GIT_TERMINAL_PROMPT": "0"}
+    )
     if not isinstance(out, str):
         raise TypeError(f"unexpected ls-remote output type: {type(out).__name__}")
-    tags: dict[str, str] = {}
+    refs: dict[str, str] = {}
     for line in out.splitlines():
         sha, ref = line.split("\t")
-        tags[ref] = sha
-    return tags
+        refs[ref] = sha
+    return refs
 
 
-def repo_issues_in_tags(repo: Repo, options: ScanOptions) -> RepoStats:
-    """Return issues for all tags in a repo."""
+def _git_error_message(e: GitCommandError) -> str:
+    """Return the line of a failed git command's stderr that names the error.
+
+    That is the first `fatal:`/`error:` line, so a leading warning or `remote:`
+    banner is skipped; failing that, the first line.
+    """
+    # GitPython wraps stderr as "\n  stderr: '<text>'"
+    stderr = (e.stderr or "").strip().removeprefix("stderr: ").strip("'")
+    lines = stderr.splitlines()
+    if not lines:
+        return str(e)
+    errors = [ln for ln in lines if ln.lower().startswith(("fatal:", "error:"))]
+    return (errors or lines)[0]
+
+
+def list_remotes(repo: Repo) -> RemoteListing:
+    """List every remote once, recording a failure instead of raising it.
+
+    One dead remote must not hide the rest of the repo's report, nor the
+    other remotes' tags and branches.
+    """
+    refs: dict[str, dict[str, str]] = {}
+    errors: dict[str, str] = {}
+    for remote in repo.remotes:
+        try:
+            refs[remote.name] = _remote_refs(repo, remote.name)
+        except GitCommandError as e:
+            errors[remote.name] = _git_error_message(e)
+    return RemoteListing(refs=refs, errors=errors)
+
+
+def repo_issues_in_tags(
+    repo: Repo, options: ScanOptions, remotes: RemoteListing | None = None
+) -> RepoStats:
+    """Return issues for all tags in a repo.
+
+    Tags are compared with the remotes only when a `remotes` listing is given.
+    """
     issues: RepoStats = {}
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if options.include_all:
         shown_tags: RepoStats = {**shorten_dict(local_tags)}
         issues["local_tags"] = shown_tags
-    if options.slow:
-        remote_tags: ChainMap[str, str] = ChainMap(
-            *(_remote_tags(repo, remote.name) for remote in repo.remotes)
-        )
+    if remotes is not None:
+        remote_tags: ChainMap[str, str] = ChainMap(*remotes.refs.values())
         remote_tags2: dict[str, str] = {
             k.removesuffix("^{}"): v
             for k, v in remote_tags.items()
@@ -483,6 +645,7 @@ def _is_branch_behind_only(record: RepoStats) -> bool:
         "no_remote",
         "remote_not_tracked",
         "remote_deleted",
+        "remote_unreachable",
         "tracks_default_branch",
     }
     return "behind" in record and not (issue_keys & record.keys())
@@ -550,9 +713,17 @@ def issues_for_one_folder(
                 common_dir=Path(repo.common_dir).resolve(),
                 git_dir=Path(repo.git_dir).resolve(),
             )
+            remotes = None
+            if options.slow:
+                remotes = options.remote_listings.get(identity.common_dir)
+                if remotes is None:
+                    remotes = list_remotes(repo)
+                    options.remote_listings[identity.common_dir] = remotes
             repo_st = repo_issues_in_stats(repo, options)
-            branches_st = repo_issues_in_branches(repo, options)
-            tags_st = repo_issues_in_tags(repo, options)
+            if remotes is not None and remotes.errors:
+                repo_st["remotes_unreachable"] = {**remotes.errors}
+            branches_st = repo_issues_in_branches(repo, options, remotes)
+            tags_st = repo_issues_in_tags(repo, options, remotes)
             submodules_st = {
                 f"/{submodule.path}": _filter_submodule_issues(
                     issues_for_one_folder(Path(submodule.abspath), options)[0]
@@ -574,8 +745,7 @@ def issues_for_one_folder(
     except GitCommandError as e:
         if is_orphaned_worktree(folder):
             return {"error": "orphaned worktree"}, None
-        stderr = (e.stderr or "").strip().strip("'\"") or str(e)
-        return {"error": f"git error: {stderr}"}, None
+        return {"error": f"git error: {_git_error_message(e)}"}, None
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:

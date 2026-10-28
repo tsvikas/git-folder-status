@@ -32,6 +32,8 @@ misses:
 - Branches without a remote
 - Branches ahead of or behind remote
 - Tags not on remote, or differing from remote (`--slow`)
+- Remotes that cannot be reached, and branches whose remote branch is gone
+  or unreachable even if not yet pruned locally (`--slow`)
 - Non-repo directories containing files
 - Broken symlinks
 - And of course, uncommitted changes and untracked files
