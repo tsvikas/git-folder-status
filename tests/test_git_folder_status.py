@@ -1,5 +1,6 @@
 """Tests for git_folder_status module."""
 
+import shutil
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
@@ -7,6 +8,7 @@ import pytest
 from git import Actor, GitCommandError, InvalidGitRepositoryError, Repo
 
 from git_folder_status.git_folder_status import (
+    RemoteListing,
     RepoIdentity,
     RepoStats,
     ScanOptions,
@@ -21,6 +23,7 @@ from git_folder_status.git_folder_status import (
     is_orphaned_worktree,
     issues_for_all_subfolders,
     issues_for_one_folder,
+    list_remotes,
     repo_issues_in_branches,
     repo_issues_in_stats,
     repo_issues_in_tags,
@@ -539,6 +542,159 @@ class TestContainedInDefault:
         assert result["branches"] == {"wip": {"no_remote": True}}
 
 
+class TestRemoteListing:
+    """Test `--slow` checks against what each remote actually holds."""
+
+    @staticmethod
+    def _commit(repo: Repo, filename: str) -> None:
+        assert repo.working_tree_dir is not None
+        (Path(repo.working_tree_dir) / filename).write_text("x")
+        repo.index.add([filename])
+        actor = Actor("Test", "test@example.com")
+        repo.index.commit(filename, author=actor, committer=actor)
+
+    @staticmethod
+    def _clone(tmp_path: Path) -> Repo:
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+
+    def _clone_with_dead_remote(self, tmp_path: Path) -> Repo:
+        """Clone, add a second remote `dead`, push to it, then delete its repo."""
+        repo = self._clone(tmp_path)
+        Repo.init(tmp_path / "dead", bare=True)
+        repo.create_remote("dead", str(tmp_path / "dead"))
+        repo.git.push("-u", "dead", "main:pushed")
+        repo.git.branch("--set-upstream-to", "origin/main", "main")
+        repo.git.branch("--track", "pushed", "dead/pushed")
+        repo.git.switch("-c", "work")
+        self._commit(repo, "work.txt")
+        repo.git.push("-u", "dead", "work")
+        repo.git.switch("main")
+        shutil.rmtree(tmp_path / "dead")
+        return repo
+
+    def test_dead_remote_only_seen_with_slow(self, tmp_path: Path) -> None:
+        """Without a listing, branches pushed to a deleted remote look in sync."""
+        repo = self._clone_with_dead_remote(tmp_path)
+
+        assert repo_issues_in_branches(repo, ScanOptions()) == {}
+
+    def test_dead_remote_reported_per_branch(self, tmp_path: Path) -> None:
+        """Each branch on a dead remote is flagged, and checked for containment."""
+        repo = self._clone_with_dead_remote(tmp_path)
+        remotes = list_remotes(repo)
+
+        assert set(remotes.errors) == {"dead"}
+        assert remotes.errors["dead"].startswith("fatal: ")
+        assert "\n" not in remotes.errors["dead"]
+        result = repo_issues_in_branches(repo, ScanOptions(slow=True), remotes)
+        assert result["branches"] == {
+            "pushed": {
+                "remote_unreachable": "dead/pushed",
+                "contained_in": "origin/main",
+            },
+            "work": {"remote_unreachable": "dead/work"},
+        }
+
+    def test_dead_remote_keeps_rest_of_report(self, tmp_path: Path) -> None:
+        """A dead remote is named, and the repo's other issues still show."""
+        repo = self._clone_with_dead_remote(tmp_path)
+        (tmp_path / "clone" / "untracked.txt").write_text("x")
+        repo.git.update_ref("refs/tags/local-only", "HEAD")
+
+        result, _ = issues_for_one_folder(tmp_path / "clone", ScanOptions(slow=True))
+
+        assert "error" not in result
+        remotes_unreachable = result["remotes_unreachable"]
+        assert isinstance(remotes_unreachable, dict)
+        assert set(remotes_unreachable) == {"dead"}
+        assert result["untracked_files"] == ["untracked.txt"]
+        assert result["tags_local_only"] == ["refs/tags/local-only"]
+        branches = result["branches"]
+        assert isinstance(branches, dict)
+        assert set(branches) == {"pushed", "work"}
+
+    def test_dead_remote_main_does_not_contain(self, tmp_path: Path) -> None:
+        """Being contained in an unreachable remote's main keeps nothing safe."""
+        repo = self._clone(tmp_path)
+        Repo.init(tmp_path / "dead", bare=True)
+        repo.create_remote("dead", str(tmp_path / "dead"))
+        repo.git.switch("-c", "scratch")
+        self._commit(repo, "scratch.txt")
+        repo.git.push("dead", "scratch:main")
+        repo.git.fetch("dead")
+        repo.git.switch("main")
+        shutil.rmtree(tmp_path / "dead")
+
+        status = all_branches_status(repo, list_remotes(repo))["scratch"]
+        assert status == {"upstream": "missing", "head": status["head"]}
+        assert "contained_in" in all_branches_status(repo)["scratch"]
+
+    def test_stale_ref_on_live_remote_is_gone(self, tmp_path: Path) -> None:
+        """A branch deleted on the remote but not yet pruned locally is `gone`."""
+        repo = self._clone(tmp_path)
+        repo.git.push("origin", "main:feature")
+        repo.git.branch("--track", "feature", "origin/feature")
+        repo.git.switch("-c", "wip")
+        self._commit(repo, "wip.txt")
+        repo.git.push("origin", "wip")  # matched by name, no upstream set
+        repo.git.switch("main")
+        Repo(tmp_path / "source").git.branch("-D", "feature", "wip")
+
+        assert repo_issues_in_branches(repo, ScanOptions()) == {
+            "branches": {"wip": {"remote_not_tracked": {"candidate": "origin/wip"}}}
+        }
+        result = repo_issues_in_branches(
+            repo, ScanOptions(slow=True), list_remotes(repo)
+        )
+        assert result["branches"] == {
+            "feature": {
+                "remote_deleted": "origin/feature",
+                "contained_in": "origin/main",
+            },
+            "wip": {"no_remote": True},
+        }
+
+    def test_untracked_branch_on_dead_remote(self, tmp_path: Path) -> None:
+        """A name-matched candidate on a dead remote is flagged as unreachable."""
+        repo = self._clone(tmp_path)
+        Repo.init(tmp_path / "dead", bare=True)
+        repo.create_remote("dead", str(tmp_path / "dead"))
+        repo.git.switch("-c", "wip")
+        self._commit(repo, "wip.txt")
+        repo.git.push("dead", "wip")
+        repo.git.switch("main")
+        shutil.rmtree(tmp_path / "dead")
+
+        result = repo_issues_in_branches(
+            repo, ScanOptions(slow=True), list_remotes(repo)
+        )
+        assert result["branches"] == {"wip": {"remote_unreachable": "dead/wip"}}
+
+    def test_live_remote_listing(self, tmp_path: Path) -> None:
+        """A reachable remote lists its branches and tags, with no errors."""
+        repo = self._clone(tmp_path)
+        Repo(tmp_path / "source").git.update_ref("refs/tags/v1", "HEAD")
+
+        remotes = list_remotes(repo)
+
+        assert remotes.errors == {}
+        assert set(remotes.refs["origin"]) == {"refs/heads/main", "refs/tags/v1"}
+
+    def test_error_without_stderr(self) -> None:
+        """A git failure with no stderr is still recorded, by its message."""
+        mock_repo = Mock(spec=Repo)
+        mock_remote = Mock()
+        mock_remote.name = "origin"
+        mock_repo.remotes = [mock_remote]
+        mock_repo.git.ls_remote.side_effect = GitCommandError(["git"], 1)
+
+        assert list_remotes(mock_repo) == RemoteListing(
+            refs={}, errors={"origin": str(GitCommandError(["git"], 1))}
+        )
+
+
 class TestDetachedHeadContainedIn:
     """Test the `detached_head_contained_in` qualifier on a detached HEAD."""
 
@@ -903,7 +1059,9 @@ class TestRepoIssuesInTags:
             "def456\trefs/tags/v1.0.0^{}\ndef456\trefs/tags/v1.0.0"
         )
 
-        result = repo_issues_in_tags(mock_repo, ScanOptions(slow=True))
+        result = repo_issues_in_tags(
+            mock_repo, ScanOptions(slow=True), list_remotes(mock_repo)
+        )
 
         # Should detect mismatch between local and remote tags
         assert "tags_mismatch" in result
