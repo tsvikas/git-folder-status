@@ -220,8 +220,12 @@ def _ref_containing_head(repo: Repo) -> str | None:
     return min(candidates)[2] if candidates else None
 
 
-def repo_stats(repo: Repo) -> RepoStats:
-    """Return stats for a repo."""
+def repo_stats(repo: Repo, *, include_remotes: bool = True) -> RepoStats:
+    """Return stats for a repo.
+
+    `remotes` costs one git call per remote and is context, not an issue, so
+    `include_remotes=False` leaves it out.
+    """
     # `git status` and `git stash` fail without a work tree, so skip them
     # in bare repos; the ref-based stats below work fine
     bare = repo.bare
@@ -242,7 +246,9 @@ def repo_stats(repo: Repo) -> RepoStats:
         ),
         "active_branch": None if head.is_detached else repo.active_branch.name,
         "head_commit_hash_short": commit.hexsha[:7] if commit else None,
-        "remotes": {r.name: list(r.urls) for r in repo.remotes},
+        "remotes": (
+            {r.name: list(r.urls) for r in repo.remotes} if include_remotes else None
+        ),
         "stash_count": 0 if bare else len(repo.git.stash("list").splitlines()),
     }
 
@@ -256,7 +262,7 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
         "is_detached_head",
         "detached_head_contained_in",
     }
-    stats = repo_stats(repo)
+    stats = repo_stats(repo, include_remotes=options.include_all)
     if not options.include_all:
         stats = {k: v for k, v in stats.items() if k in stats_to_include}
     issues: RepoStats = {k: v for k, v in stats.items() if v}
@@ -676,6 +682,9 @@ def repo_issues_in_tags(
     Tags are compared with the remotes only when a `remotes` listing is given.
     """
     issues: RepoStats = {}
+    # resolving every tag's commit is slow, and only these two uses need it
+    if not options.include_all and remotes is None:
+        return issues
     local_tags: dict[str, str] = {tag.path: tag.commit.hexsha for tag in repo.tags}
     if options.include_all:
         shown_tags: RepoStats = {**shorten_dict(local_tags)}
