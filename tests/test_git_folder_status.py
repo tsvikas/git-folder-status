@@ -2,7 +2,9 @@
 
 import dataclasses
 import shutil
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
@@ -13,6 +15,7 @@ from git import Actor, Git, GitCommandError, InvalidGitRepositoryError, Repo
 from git_folder_status.git_folder_status import (
     BranchRef,
     RemoteListing,
+    RemoteListingCache,
     RepoIdentity,
     RepoStats,
     ScanOptions,
@@ -1721,6 +1724,72 @@ class TestIssuesForAllSubfolders:
             # Should mark the empty directory as not git
             assert "empty_subdir" in result
             assert result["empty_subdir"]["is_git"] is False
+
+
+class TestParallelScan:
+    """Test that scanning repos in parallel threads changes nothing but speed."""
+
+    @staticmethod
+    def _tree(tmp_path: Path) -> Path:
+        """Build a scan root with the shapes the scan treats differently."""
+        root = tmp_path / "scan"
+        for name in ("a", "b", "c"):
+            repo = _init_repo_with_commit(root / name)
+            (root / name / f"{name}.txt").write_text("untracked")
+            repo.git.branch(f"{name}-branch")
+            repo.close()
+        with Repo(root / "a") as repo_a:
+            repo_a.git.worktree("add", str(root / "a-wt"), "-b", "inside")
+            repo_a.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "outside")
+        _init_repo_with_commit(root / "nested" / "d").close()
+        (root / "nested" / "loose.txt").write_text("1")
+        (root / "plain").mkdir()
+        (root / "plain" / "file.txt").write_text("1")
+        return root
+
+    @pytest.mark.parametrize("mode", ["default", "slow"])
+    def test_report_does_not_depend_on_jobs(self, tmp_path: Path, mode: str) -> None:
+        """One thread and many threads give the same report."""
+        root = self._tree(tmp_path)
+
+        def scan(jobs: int) -> dict[str, RepoStats]:
+            return issues_for_all_subfolders(
+                root,
+                recurse=3,
+                slow=mode == "slow",
+                scan_external_worktrees=True,
+                jobs=jobs,
+            )
+
+        sequential = scan(jobs=1)
+        assert scan(jobs=8) == sequential
+        assert set(sequential) >= {"a", "b", "c", "nested/d", "nested", "plain"}
+
+    def test_remotes_listed_once_across_threads(self, tmp_path: Path) -> None:
+        """Threads asking for one repo's listing at once share a single listing."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        cache = RemoteListingCache()
+        calls = 0
+
+        def slow_listing(_repo: Repo) -> RemoteListing:
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)  # keep the first listing running while others ask
+            return RemoteListing(refs={}, errors={})
+
+        with (
+            patch("git_folder_status.git_folder_status.list_remotes", slow_listing),
+            ThreadPoolExecutor(max_workers=8) as pool,
+        ):
+            listings = list(
+                pool.map(
+                    lambda _: cache.get(tmp_path / "repo" / ".git", repo), range(8)
+                )
+            )
+        repo.close()
+
+        assert calls == 1
+        assert all(listing is listings[0] for listing in listings)
 
 
 class TestRepoIdentity:
