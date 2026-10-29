@@ -50,7 +50,7 @@ Install this tool using uv (or pipx):
 uv tool install git+https://github.com/tsvikas/git-folder-status.git
 ```
 
-It needs git 2.17 or newer.
+It needs git 2.23 or newer.
 
 ## Usage
 

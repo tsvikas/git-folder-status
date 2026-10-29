@@ -1,5 +1,7 @@
 """Tests for git_folder_status module."""
 
+import dataclasses
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +21,6 @@ from git_folder_status.git_folder_status import (
     _list_worktree_paths,
     _relative_key,
     _split_shared_stats,
-    _worktree_branches,
     all_branches_status,
     branch_status,
     is_file,
@@ -631,8 +632,13 @@ class TestListBranches:
 
         branches = {b.name: b for b in list_branches(repo)}
 
+        # the checked-out branch names this work tree, in git's own spelling
+        main = branches.pop("main")
+        assert Path(main.worktree).resolve() == (tmp_path / "clone").resolve()
+        assert dataclasses.replace(main, worktree="") == BranchRef(
+            "main", head, "origin/main", "origin", "main", "ahead 1"
+        )
         assert branches == {
-            "main": BranchRef("main", head, "origin/main", "origin", "main", "ahead 1"),
             "old": BranchRef("old", head, "origin/old", "origin", "old", "gone"),
             "plain": BranchRef("plain", head),
             "on-local": BranchRef("on-local", head),
@@ -1790,27 +1796,70 @@ class TestListWorktreePaths:
         ]
 
 
-class TestWorktreeBranches:
-    """Test _worktree_branches porcelain parsing."""
+class TestBranchWorktree:
+    """Test the `worktree` field naming another worktree with a branch checked out."""
 
-    def test_maps_branches_skipping_unusable_entries(self) -> None:
-        """Each branch maps to its worktree; bare/detached/prunable are skipped."""
-        mock_repo = Mock(spec=Repo)
-        mock_repo.git.worktree.return_value = (
-            "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n"
-            "worktree /repo/.bare\nbare\n\n"
-            "worktree /repo/feat\nHEAD def\nbranch refs/heads/refactor/dotbot\n\n"
-            "worktree /repo/detached\nHEAD ghi\ndetached\n\n"
-            "worktree /repo/gone\nHEAD jkl\n"
-            "prunable gitdir file points to non-existent location\n"
-            "branch refs/heads/stale\n"
+    def test_other_worktree_named_own_omitted(self, tmp_path: Path) -> None:
+        """A branch in a linked worktree names it; the repo's own branch does not."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        repo.git.branch("-M", "main")
+        repo.git.worktree("add", str(tmp_path / "wt"), "-b", "feat")
+
+        statuses = all_branches_status(repo)
+
+        assert statuses["feat"]["worktree"] == (tmp_path / "wt").resolve().as_posix()
+        assert "worktree" not in statuses["main"]
+        with Repo(tmp_path / "wt") as linked:
+            linked_statuses = all_branches_status(linked)
+        assert "worktree" not in linked_statuses["feat"]
+        assert linked_statuses["main"]["worktree"] == (
+            (tmp_path / "repo").resolve().as_posix()
         )
-        # values are `path.resolve().as_posix()`; resolve mirrors the code so the
-        # expectation holds on Windows too, where resolve prepends a drive letter
-        assert _worktree_branches(mock_repo) == {
-            "main": Path("/repo/main").resolve().as_posix(),
-            "refactor/dotbot": Path("/repo/feat").resolve().as_posix(),
-        }
+
+    def test_deleted_worktree_omitted(self, tmp_path: Path) -> None:
+        """A worktree whose directory is gone (prunable) is not named."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        repo.git.worktree("add", str(tmp_path / "wt"), "-b", "feat")
+        shutil.rmtree(tmp_path / "wt")
+
+        assert "worktree" not in all_branches_status(repo)["feat"]
+
+    def test_submodule_own_branch_omitted(self, tmp_path: Path) -> None:
+        """A submodule's checked-out branch is its own, though git names its git dir."""
+        parent = _init_repo_with_commit(tmp_path / "repo")
+        _init_repo_with_commit(tmp_path / "sub").close()
+        checkout = _add_submodule(parent, tmp_path / "sub", "sm")
+        parent.close()
+        with Repo(checkout) as sub:
+            sub.git.switch("-c", "work")
+            assert "worktree" not in all_branches_status(sub)["work"]
+
+    def test_bare_repo_head_omitted(self, tmp_path: Path) -> None:
+        """A bare repo's HEAD branch is not checked out anywhere else."""
+        _init_repo_with_commit(tmp_path / "src").close()
+        with Repo.clone_from(
+            str(tmp_path / "src"), tmp_path / "bare", bare=True
+        ) as repo:
+            head_branch = repo.active_branch.name
+            repo.git.worktree("add", str(tmp_path / "wt"), "-b", "feat")
+            statuses = all_branches_status(repo)
+        assert statuses["feat"]["worktree"] == (tmp_path / "wt").resolve().as_posix()
+        assert "worktree" not in statuses[head_branch]
+
+    def test_linked_worktree_of_submodule(self, tmp_path: Path) -> None:
+        """Seen from its linked worktree, a submodule's main worktree is named."""
+        parent = _init_repo_with_commit(tmp_path / "repo")
+        _init_repo_with_commit(tmp_path / "sub").close()
+        checkout = _add_submodule(parent, tmp_path / "sub", "sm")
+        parent.close()
+        with Repo(checkout) as sub:
+            sub.git.switch("-c", "work")
+            sub.git.worktree("add", str(tmp_path / "sm-wt"), "-b", "feat")
+        with Repo(tmp_path / "sm-wt") as linked:
+            statuses = all_branches_status(linked)
+        # git names the submodule's main worktree by its git dir
+        assert statuses["work"]["worktree"] == checkout.resolve().as_posix()
+        assert "worktree" not in statuses["feat"]
 
 
 def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
