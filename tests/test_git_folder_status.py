@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import pytest
 from git import Actor, Git, GitCommandError, InvalidGitRepositoryError, Repo
+from git.refs.remote import RemoteReference
 
 from git_folder_status.git_folder_status import (
     BranchRef,
@@ -36,6 +37,7 @@ from git_folder_status.git_folder_status import (
     shorten_dict,
     shorten_list,
     simplify_report,
+    split_remote_ref,
     work_tree_status,
 )
 
@@ -996,6 +998,71 @@ class TestRemoteListing:
         )
 
 
+class TestSlashRemoteName:
+    """Test a remote whose name contains `/`, which GitPython splits wrongly."""
+
+    @staticmethod
+    def _clone_as(tmp_path: Path, remote: str) -> Repo:
+        """Clone a repo, then rename its remote, refs included, to `remote`."""
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        source.close()
+        repo = Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+        repo.git.remote("rename", "origin", remote)
+        return repo
+
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            ({"team/fork", "origin"}, ("team/fork", "user/main")),
+            # a hand-edited config can hold both; the longer name wins
+            ({"team", "team/fork"}, ("team/fork", "user/main")),
+            ({"origin"}, None),
+        ],
+    )
+    def test_split_by_configured_names(
+        self, names: set[str], expected: tuple[str, str] | None
+    ) -> None:
+        """The remote is the configured name the ref sits under, `/` and all."""
+        path = "refs/remotes/team/fork/user/main"
+        assert split_remote_ref(path, names) == expected
+
+    def test_live_branch_not_gone_under_slow(self, tmp_path: Path) -> None:
+        """A name-matched branch on a `team/fork` remote is not reported gone."""
+        with self._clone_as(tmp_path, "team/fork") as repo:
+            repo.git.switch("-c", "wip")
+            _commit_file(repo, "wip.txt")
+            repo.git.push("team/fork", "wip")  # matched by name, no upstream set
+            repo.git.switch("main")
+
+            result = repo_issues_in_branches(
+                repo, ScanOptions(slow=True), list_remotes(repo)
+            )
+
+        branches = result["branches"]
+        assert isinstance(branches, dict)
+        assert branches["wip"] == {"remote_not_tracked": {"candidate": "team/fork/wip"}}
+
+    @pytest.mark.parametrize("mode", ["default", "slow"])
+    def test_contained_in_slash_remote_main(self, tmp_path: Path, mode: str) -> None:
+        """A branch merged into `team/fork/main` is contained, in either mode."""
+        with self._clone_as(tmp_path, "team/fork") as repo:
+            repo.git.branch("scratch")
+            remotes = list_remotes(repo) if mode == "slow" else None
+            status = all_branches_status(repo, remotes)["scratch"]
+
+        assert status["contained_in"] == "team/fork/main"
+
+    def test_ref_of_unknown_remote_falls_back(self, tmp_path: Path) -> None:
+        """A ref under no listed remote is split as GitPython splits it."""
+        with _init_repo_with_commit(tmp_path) as repo:
+            ref = RemoteReference(repo, "refs/remotes/gone/main")
+            listing = RemoteListing(refs={"origin": {}}, errors={"gone": "fatal: x"})
+            assert listing.tracking_ref_state(ref) == "unreachable"
+            listing = RemoteListing(refs={"origin": {}}, errors={})
+            assert listing.tracking_ref_state(ref) == "gone"
+
+
 class TestDetachedHeadContainedIn:
     """Test the `detached_head_contained_in` qualifier on a detached HEAD."""
 
@@ -1870,6 +1937,15 @@ def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
     parent.index.commit("add submodule", author=actor, committer=actor)
     assert parent.working_tree_dir is not None
     return Path(parent.working_tree_dir) / name
+
+
+def _commit_file(repo: Repo, filename: str) -> None:
+    """Write `filename` in `repo`'s work tree and commit it."""
+    assert repo.working_tree_dir is not None
+    (Path(repo.working_tree_dir) / filename).write_text("x")
+    repo.index.add([filename])
+    actor = Actor("Test", "test@example.com")
+    repo.index.commit(filename, author=actor, committer=actor)
 
 
 def _init_repo_with_commit(path: Path) -> Repo:
