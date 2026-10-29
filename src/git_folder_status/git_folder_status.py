@@ -525,7 +525,8 @@ def _other_worktree(path: str, *, common_dir: Path, own: Path) -> str | None:
     tree. When the main worktree lives apart from its git dir (a submodule, a
     `--separate-git-dir` repo), git names the git dir: that is mapped to the
     real work tree. A bare repo's HEAD names the repo itself, which is no work
-    tree. A worktree whose directory is gone (prunable) does not count either.
+    tree. A worktree git calls prunable does not count either: one whose `.git`
+    is gone, with or without its directory.
     """
     if not path:
         return None
@@ -534,7 +535,7 @@ def _other_worktree(path: str, *, common_dir: Path, own: Path) -> str | None:
         resolved = _main_worktree_dir(common_dir)
         if resolved == common_dir:  # a bare repo
             return None
-    if resolved == own or not resolved.is_dir():
+    if resolved == own or not (resolved / ".git").exists():
         return None
     return resolved.as_posix()
 
@@ -718,8 +719,10 @@ def _git_error_message(e: GitCommandError) -> str:
     That is the first `fatal:`/`error:` line, so a leading warning or `remote:`
     banner is skipped; failing that, the first line.
     """
-    # GitPython wraps stderr as "\n  stderr: '<text>'"
-    stderr = (e.stderr or "").strip().removeprefix("stderr: ").strip("'")
+    # GitPython wraps stderr as "\n  stderr: '<text>'"; drop only that one pair
+    # of quotes, since <text> can itself end in a quote
+    wrapped = (e.stderr or "").strip().removeprefix("stderr: ")
+    stderr = wrapped.removeprefix("'").removesuffix("'")
     lines = stderr.splitlines()
     if not lines:
         return str(e)
