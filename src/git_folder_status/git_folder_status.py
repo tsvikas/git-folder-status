@@ -861,7 +861,8 @@ def _submodules(repo: Repo) -> list[Submodule]:
     HEAD commit, which starts a `git cat-file` process. With no `.gitmodules`
     file there is nothing to find. A bare repo reads it from HEAD instead.
     """
-    work_tree = None if repo.bare else repo.working_tree_dir
+    # `working_tree_dir` is None in a bare repo
+    work_tree = repo.working_tree_dir
     if work_tree and not (Path(work_tree) / ".gitmodules").is_file():
         return []
     return list(repo.submodules)
