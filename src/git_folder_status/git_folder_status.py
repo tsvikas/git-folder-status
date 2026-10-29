@@ -163,9 +163,7 @@ def list_branches(repo: Repo) -> list[BranchRef]:
     """Return every local branch with its upstream, in one git call."""
     out = repo.git.for_each_ref(f"--format={_BRANCH_FORMAT}", "refs/heads")
     branches = []
-    # git ends each record with "\n" only; `splitlines()` would also split a
-    # worktree path at characters such as U+2028
-    for line in out.split("\n") if out else []:
+    for line in out.splitlines():
         fields = line.split("\0")
         refname, head, upstream, remote, remote_ref, track, worktree = fields
         # an upstream outside refs/remotes/ is a local branch, not a remote

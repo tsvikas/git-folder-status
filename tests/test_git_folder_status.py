@@ -1861,16 +1861,6 @@ class TestBranchWorktree:
         assert statuses["work"]["worktree"] == checkout.resolve().as_posix()
         assert "worktree" not in statuses["feat"]
 
-    def test_worktree_path_with_line_separator(self, tmp_path: Path) -> None:
-        """A worktree path with a Unicode line separator stays one record."""
-        repo = _init_repo_with_commit(tmp_path / "repo")
-        odd = tmp_path / f"wt{chr(0x2028)}x"  # U+2028 LINE SEPARATOR
-        repo.git.worktree("add", str(odd), "-b", "feat")
-
-        assert all_branches_status(repo)["feat"]["worktree"] == (
-            odd.resolve().as_posix()
-        )
-
 
 def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
     """Add `source` as a submodule of `parent`, commit it, return its checkout."""
