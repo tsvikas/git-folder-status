@@ -256,9 +256,18 @@ def work_tree_status(repo: Repo) -> WorkTreeStatus:
 
     Matches GitPython's `is_dirty()` (staged, unstaged and submodule changes,
     not untracked files) and `untracked_files` (each file inside untracked dirs).
+    A submodule with only untracked files is not a change here: like
+    `is_dirty()`, and those files are reported under the submodule itself.
     """
     out = repo.git.status(
-        "--porcelain=v2", "--branch", "--show-stash", "--untracked-files=all", "-z"
+        "--porcelain=v2",
+        "--branch",
+        # `--branch` would also count commits against the upstream, unused here
+        "--no-ahead-behind",
+        "--show-stash",
+        "--untracked-files=all",
+        "--ignore-submodules=untracked",
+        "-z",
     )
     head: str | None = None
     branch: str | None = None

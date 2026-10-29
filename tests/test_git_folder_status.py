@@ -15,6 +15,7 @@ from git_folder_status.git_folder_status import (
     RepoStats,
     ScanOptions,
     _filter_submodule_issues,
+    _git_version,
     _list_worktree_paths,
     _relative_key,
     _split_shared_stats,
@@ -196,16 +197,20 @@ class TestRepoStats:
     @staticmethod
     @contextmanager
     def _spy_git_commands() -> Iterator[Mock]:
-        """Record every `repo.git.<command>(...)` call, still running it."""
-        # every `repo.git.<command>` goes through GitPython's private dispatch
-        real = Git._call_process  # noqa: SLF001
-        with patch.object(Git, "_call_process", autospec=True, side_effect=real) as spy:
+        """Record every git command GitPython runs, still running it."""
+        with patch.object(
+            Git, "execute", autospec=True, side_effect=Git.execute
+        ) as spy:
             yield spy
 
     @staticmethod
     def _names(spy: Mock) -> list[str]:
         """Return the git command names a `_spy_git_commands` spy saw."""
-        return [c.args[1] for c in spy.call_args_list]
+        # args are (self, ["git", <global options>, <command>, ...])
+        return [
+            next(arg for arg in c.args[1][1:] if not arg.startswith("-"))
+            for c in spy.call_args_list
+        ]
 
     def test_clean_repo(self, tmp_path: Path) -> None:
         """A clean repo reports its branch and HEAD, with nothing to save."""
@@ -244,6 +249,34 @@ class TestRepoStats:
             (checkout / "README.md").write_text("changed\n")
 
         assert work_tree_status(repo).is_dirty is True
+
+    def test_submodule_with_only_untracked_files_is_clean(self, tmp_path: Path) -> None:
+        """Untracked files in a submodule are its own issue, not the parent's."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        _init_repo_with_commit(tmp_path / "sub")
+        checkout = _add_submodule(repo, tmp_path / "sub", "sm")
+        (checkout / "untracked.txt").write_text("1")
+
+        status = work_tree_status(repo)
+
+        assert status.is_dirty is False
+        assert status.untracked_files == []
+
+    def test_rename_from_record_like_name(self, tmp_path: Path) -> None:
+        """A rename's original path is skipped, even if it looks like a record."""
+        repo = _init_repo_with_commit(tmp_path)
+        # misread as a header, this old name would set the stash count to 7
+        old_name = "# stash 7"
+        (tmp_path / old_name).write_text("old\n")
+        repo.index.add([old_name])
+        actor = Actor("Test", "test@example.com")
+        repo.index.commit("add", author=actor, committer=actor)
+        repo.git.mv(old_name, "new.md")
+
+        status = work_tree_status(repo)
+
+        assert status.is_dirty is True
+        assert status.stash_count == 0
 
     def test_untracked_files_listed_one_by_one(self, tmp_path: Path) -> None:
         """Files inside untracked dirs are listed, names kept verbatim."""
@@ -289,18 +322,26 @@ class TestRepoStats:
         assert "stash" in self._names(commands)
 
     def test_stash_not_listed_on_current_git(self, tmp_path: Path) -> None:
-        """From git 2.35 the stash count comes from `git status` alone.
-
-        The git version is asked once per process, not once per repo.
-        """
+        """From git 2.35 the stash count comes from `git status` alone."""
         repo = _init_repo_with_commit(tmp_path)
-        # close it: GitPython's helper processes warn when garbage-collected
-        with _init_repo_with_commit(tmp_path / "other") as other:
-            work_tree_status(other)
 
-        with self._spy_git_commands() as commands:
+        with (
+            patch(
+                "git_folder_status.git_folder_status._git_version",
+                return_value=(2, 56, 0),
+            ),
+            self._spy_git_commands() as commands,
+        ):
             work_tree_status(repo)
         assert self._names(commands) == ["status"]
+
+    def test_git_version_asked_once(self) -> None:
+        """The git version is asked once per process, not once per repo."""
+        _git_version.cache_clear()
+        with self._spy_git_commands() as commands:
+            first = _git_version()
+            assert _git_version() == first
+        assert self._names(commands) == ["version"]
 
     def test_detached_head(self, tmp_path: Path) -> None:
         """A detached HEAD has no branch, and is checked for a containing ref."""
