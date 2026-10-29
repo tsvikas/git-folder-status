@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from git import Git, GitCommandError, InvalidGitRepositoryError, Repo
+from git import Git, GitCommandError, InvalidGitRepositoryError, Repo, Submodule
 from git.refs.remote import RemoteReference
 
 IGNORED_FILENAMES = [".DS_Store"]
@@ -854,6 +854,19 @@ def is_orphaned_worktree(folder: Path) -> bool:
     return not gitdir.is_dir()
 
 
+def _submodules(repo: Repo) -> list[Submodule]:
+    """Return a repo's submodules, without looking when there can be none.
+
+    In a work tree GitPython reads `.gitmodules` from disk, but first loads the
+    HEAD commit, which starts a `git cat-file` process. With no `.gitmodules`
+    file there is nothing to find. A bare repo reads it from HEAD instead.
+    """
+    work_tree = None if repo.bare else repo.working_tree_dir
+    if work_tree and not (Path(work_tree) / ".gitmodules").is_file():
+        return []
+    return list(repo.submodules)
+
+
 def issues_for_one_folder(
     folder: Path, options: ScanOptions
 ) -> tuple[RepoStats, RepoIdentity | None]:
@@ -885,7 +898,7 @@ def issues_for_one_folder(
                 f"/{submodule.path}": _filter_submodule_issues(
                     issues_for_one_folder(Path(submodule.abspath), options)[0]
                 )
-                for submodule in repo.submodules
+                for submodule in _submodules(repo)
             }
         submodules_st = {k: v for k, v in submodules_st.items() if v}
         assert isinstance(repo_st, dict)  # noqa: S101

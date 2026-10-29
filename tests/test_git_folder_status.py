@@ -1389,6 +1389,25 @@ class TestIssuesForOneFolder:
         assert result == {}
         assert identity is None
 
+    def test_submodules_not_listed_without_gitmodules(self, tmp_path: Path) -> None:
+        """A work tree with no `.gitmodules` skips GitPython's submodule lookup."""
+        _init_repo_with_commit(tmp_path).close()
+
+        with patch.object(Repo, "submodules", new_callable=PropertyMock) as spy:
+            issues_for_one_folder(tmp_path, ScanOptions())
+        spy.assert_not_called()
+
+    def test_submodules_listed_with_gitmodules(self, tmp_path: Path) -> None:
+        """A work tree with `.gitmodules` still scans its submodules."""
+        parent = _init_repo_with_commit(tmp_path / "repo")
+        _init_repo_with_commit(tmp_path / "sub").close()
+        checkout = _add_submodule(parent, tmp_path / "sub", "sm")
+        (checkout / "untracked.txt").write_text("1")
+        parent.close()
+
+        result, _ = issues_for_one_folder(tmp_path / "repo", ScanOptions())
+        assert result["/sm"] == {"untracked_files": ["untracked.txt"]}
+
     def test_bare_repository(self, tmp_path: Path) -> None:
         """Test that a bare repo is analyzed without errors."""
         with Repo.init(tmp_path, bare=True):
