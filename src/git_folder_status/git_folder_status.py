@@ -135,6 +135,7 @@ class BranchRef:
     no upstream is configured or it is a local branch. `remote` and
     `remote_head` name the branch on that remote. `track` is git's own
     `ahead N, behind M` summary of the branch against its upstream, or `gone`.
+    `worktree` is the path of the worktree that has the branch checked out.
     """
 
     name: str
@@ -143,6 +144,7 @@ class BranchRef:
     remote: str = ""
     remote_head: str = ""
     track: str = ""
+    worktree: str = ""
 
 
 # fields separated by NUL (`%00`), which no ref name can contain
@@ -152,7 +154,8 @@ _BRANCH_FORMAT = (
     "%(upstream)%00"
     "%(upstream:remotename)%00"
     "%(upstream:remoteref)%00"
-    "%(upstream:track,nobracket)"
+    "%(upstream:track,nobracket)%00"
+    "%(worktreepath)"
 )
 
 
@@ -161,7 +164,8 @@ def list_branches(repo: Repo) -> list[BranchRef]:
     out = repo.git.for_each_ref(f"--format={_BRANCH_FORMAT}", "refs/heads")
     branches = []
     for line in out.splitlines():
-        refname, head, upstream, remote, remote_ref, track = line.split("\0")
+        fields = line.split("\0")
+        refname, head, upstream, remote, remote_ref, track, worktree = fields
         # an upstream outside refs/remotes/ is a local branch, not a remote
         if not upstream.startswith("refs/remotes/"):
             upstream = remote = remote_ref = track = ""
@@ -173,6 +177,7 @@ def list_branches(repo: Repo) -> list[BranchRef]:
                 remote=remote,
                 remote_head=remote_ref.removeprefix("refs/heads/"),
                 track=track,
+                worktree=worktree,
             )
         )
     return branches
@@ -539,17 +544,21 @@ def _iter_worktrees(repo: Repo) -> Iterator[tuple[Path, str | None]]:
             path, branch, skip = None, None, False
 
 
-def _worktree_branches(repo: Repo) -> dict[str, str]:
-    """Map each checked-out branch name to the worktree path that holds it.
+def _other_worktree(repo: Repo, path: str) -> str | None:
+    """Return a branch's `%(worktreepath)` if it is a worktree other than `repo`.
 
-    Git allows a branch to be checked out in at most one worktree, so the
-    mapping is unambiguous. Detached worktrees have no branch and are omitted.
+    The path names `repo` itself when the branch is checked out there. For a
+    repo whose work tree lives apart from its git dir (a submodule), git names
+    the git dir instead, and a bare repo's HEAD names the repo. A worktree
+    whose directory is gone (prunable) does not count either.
     """
-    return {
-        branch: path.resolve().as_posix()
-        for path, branch in _iter_worktrees(repo)
-        if branch is not None
-    }
+    if not path:
+        return None
+    resolved = Path(path).resolve()
+    own = {Path(repo.common_dir).resolve(), Path(repo.working_dir).resolve()}
+    if resolved in own or not resolved.is_dir():
+        return None
+    return resolved.as_posix()
 
 
 # upstream states with no usable ahead count, so containment in a remote
@@ -599,13 +608,11 @@ def all_branches_status(
     branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
         return {}
-    checkouts = _worktree_branches(repo)
-    own = Path(repo.working_dir).resolve().as_posix() if repo.working_dir else None
     result: dict[str, RepoStats] = {}
     for branch in branches:
         status = branch_status(repo, branch, remotes)
-        worktree = checkouts.get(branch.name)
-        if worktree is not None and worktree != own:
+        worktree = _other_worktree(repo, branch.worktree)
+        if worktree is not None:
             status["worktree"] = worktree
         result[branch.name] = status
     # skip the git calls when no branch can use the answer
