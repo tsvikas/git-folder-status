@@ -379,6 +379,21 @@ def test_upstream_of_removed_remote_differs(tmp_path: Path) -> None:
         assert _gitpython_upstream(repo, "main")["upstream"] == "set"
 
 
+def test_upstream_of_slash_remote_differs(tmp_path: Path) -> None:
+    """Intended difference: a remote named `team/fork` keeps its full name.
+
+    GitPython ends a remote name at the first `/`, reading `team/fork/main` as
+    branch `fork/main` on remote `team`; git, and so the scan, names the remote
+    `team/fork` and the branch `main`.
+    """
+    with _clone_with_branches(tmp_path) as repo:
+        repo.git.remote("rename", "origin", "team/fork")
+        scan = _scan_upstreams(repo)["main"]
+        clear = _gitpython_upstream(repo, "main")
+    assert (scan["remote"], scan["remote_head"]) == ("team/fork", "main")
+    assert (clear["remote"], clear["remote_head"]) == ("team", "fork/main")
+
+
 def test_ahead_behind_matches_commit_counts(tmp_path: Path) -> None:
     """`rev-list --left-right --count` counts what GitPython's commit lists hold."""
     with _clone_with_branches(tmp_path) as repo:

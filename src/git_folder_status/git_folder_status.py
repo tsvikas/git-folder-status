@@ -124,7 +124,27 @@ class RemoteListing:
 
     def tracking_ref_state(self, ref: RemoteReference) -> str:
         """Return `ref_state` for a local remote-tracking ref."""
-        return self.ref_state(ref.remote_name, ref.remote_head)
+        # the listing holds every configured remote, reachable or not
+        remotes = self.refs.keys() | self.errors.keys()
+        split = split_remote_ref(ref.path, remotes)
+        if split is None:  # a ref left by a removed remote
+            return self.ref_state(ref.remote_name, ref.remote_head)
+        return self.ref_state(*split)
+
+
+def split_remote_ref(path: str, remote_names: Iterable[str]) -> tuple[str, str] | None:
+    """Split `refs/remotes/<remote>/<branch>` by the configured remote names.
+
+    GitPython's `RemoteReference.remote_name` ends the remote name at the first
+    `/`, so a remote named `team/fork` reads as `team`. git refuses to add a
+    remote whose name is a prefix of another's, so one name matches at most;
+    the longest wins if a hand-edited config has both. `None` if none matches.
+    """
+    rest = path.removeprefix("refs/remotes/")
+    for name in sorted(remote_names, key=len, reverse=True):
+        if rest.startswith(f"{name}/"):
+            return name, rest.removeprefix(f"{name}/")
+    return None
 
 
 @dataclass(frozen=True)
@@ -558,7 +578,9 @@ def _contained_in_default(
     contained: dict[str, str] = {}
     for remote in repo.remotes:
         for ref in remote.refs:
-            if ref.remote_head not in DEFAULT_BRANCH_NAMES:
+            # not `ref.remote_head`, which splits a `team/fork` remote at its `/`
+            branch = ref.path.removeprefix(f"refs/remotes/{remote.name}/")
+            if branch not in DEFAULT_BRANCH_NAMES:
                 continue
             if remotes is not None and remotes.tracking_ref_state(ref) != "ok":
                 continue
