@@ -6,13 +6,14 @@ all Git repositories found within.
 Run `git-folder-status -h` for help.
 """
 
+import functools
 import sys
 from collections import ChainMap
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from git import GitCommandError, InvalidGitRepositoryError, Repo
+from git import Git, GitCommandError, InvalidGitRepositoryError, Repo
 from git.refs.remote import RemoteReference
 
 IGNORED_FILENAMES = [".DS_Store"]
@@ -220,36 +221,117 @@ def _ref_containing_head(repo: Repo) -> str | None:
     return min(candidates)[2] if candidates else None
 
 
+@dataclass(frozen=True)
+class WorkTreeStatus:
+    """A work tree's state, as one `git status --porcelain=v2` call reports it.
+
+    `head` is the commit sha, `None` in a repo with no commits yet. `branch`
+    is the checked-out branch, `None` on a detached HEAD.
+    """
+
+    head: str | None
+    branch: str | None
+    is_dirty: bool
+    untracked_files: list[str]
+    stash_count: int
+
+
+# `git status --porcelain=v2 --show-stash` reports the stash count from 2.35 on;
+# older git prints nothing, which would hide stashed work as "no stash"
+_STATUS_SHOWS_STASH = (2, 35)
+
+
+@functools.cache
+def _git_version() -> tuple[int, ...]:
+    """Return the git version, asked once per process.
+
+    GitPython caches `version_info` per `Repo`, which costs a `git version`
+    call for every scanned repo.
+    """
+    return Git().version_info
+
+
+def work_tree_status(repo: Repo) -> WorkTreeStatus:
+    """Return HEAD, changes, untracked files and stash count in one git call.
+
+    Matches GitPython's `is_dirty()` (staged, unstaged and submodule changes,
+    not untracked files) and `untracked_files` (each file inside untracked dirs).
+    A submodule with only untracked files is not a change here: like
+    `is_dirty()`, and those files are reported under the submodule itself.
+    """
+    out = repo.git.status(
+        "--porcelain=v2",
+        "--branch",
+        # `--branch` would also count commits against the upstream, unused here
+        "--no-ahead-behind",
+        "--show-stash",
+        "--untracked-files=all",
+        "--ignore-submodules=untracked",
+        "-z",
+    )
+    head: str | None = None
+    branch: str | None = None
+    is_dirty = False
+    untracked: list[str] = []
+    stash_count = 0
+    records = iter(out.split("\0"))
+    for record in records:
+        kind, _, rest = record.partition(" ")
+        if kind == "#":
+            key, _, value = rest.partition(" ")
+            if key == "branch.oid" and value != "(initial)":
+                head = value
+            elif key == "branch.head" and value != "(detached)":
+                branch = value
+            elif key == "stash":
+                stash_count = int(value)
+        elif kind in {"1", "2", "u"}:
+            is_dirty = True
+            if kind == "2":
+                next(records)  # a rename's original path is a record of its own
+        elif kind == "?":
+            untracked.append(rest)
+    if _git_version() < _STATUS_SHOWS_STASH:
+        stash_count = len(repo.git.stash("list").splitlines())
+    return WorkTreeStatus(head, branch, is_dirty, untracked, stash_count)
+
+
+def _bare_status(repo: Repo) -> WorkTreeStatus:
+    """Return the HEAD of a bare repo; it has no work tree, changes or stash."""
+    try:
+        head: str | None = repo.head.commit.hexsha
+    except ValueError:
+        head = None  # an empty repo
+    branch = None if repo.head.is_detached else repo.active_branch.name
+    return WorkTreeStatus(
+        head, branch, is_dirty=False, untracked_files=[], stash_count=0
+    )
+
+
 def repo_stats(repo: Repo, *, include_remotes: bool = True) -> RepoStats:
     """Return stats for a repo.
 
     `remotes` costs one git call per remote and is context, not an issue, so
     `include_remotes=False` leaves it out.
     """
-    # `git status` and `git stash` fail without a work tree, so skip them
-    # in bare repos; the ref-based stats below work fine
     bare = repo.bare
-    untracked_files = [] if bare else shorten_list(repo.untracked_files)
-    head = repo.head
-    try:
-        commit = head.commit
-    except ValueError:
-        # handle an empty repo
-        commit = None
+    # `git status` fails without a work tree
+    status = _bare_status(repo) if bare else work_tree_status(repo)
+    detached = status.branch is None
     return {
         "bare": bare,
-        "is_dirty": repo.is_dirty(),
-        "untracked_files": untracked_files,
-        "is_detached_head": head.is_detached,
+        "is_dirty": status.is_dirty,
+        "untracked_files": shorten_list(status.untracked_files),
+        "is_detached_head": detached,
         "detached_head_contained_in": (
-            _ref_containing_head(repo) if head.is_detached and commit else None
+            _ref_containing_head(repo) if detached and status.head else None
         ),
-        "active_branch": None if head.is_detached else repo.active_branch.name,
-        "head_commit_hash_short": commit.hexsha[:7] if commit else None,
+        "active_branch": status.branch,
+        "head_commit_hash_short": status.head[:7] if status.head else None,
         "remotes": (
             {r.name: list(r.urls) for r in repo.remotes} if include_remotes else None
         ),
-        "stash_count": 0 if bare else len(repo.git.stash("list").splitlines()),
+        "stash_count": status.stash_count,
     }
 
 
