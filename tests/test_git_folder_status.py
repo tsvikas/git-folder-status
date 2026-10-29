@@ -24,6 +24,7 @@ from git_folder_status.git_folder_status import (
     _list_worktree_paths,
     _relative_key,
     _split_shared_stats,
+    _worktree_paths_of,
     all_branches_status,
     branch_status,
     is_file,
@@ -1764,6 +1765,35 @@ class TestParallelScan:
         sequential = scan(jobs=1)
         assert scan(jobs=8) == sequential
         assert set(sequential) >= {"a", "b", "c", "nested/d", "nested", "plain"}
+
+    def test_worktree_listing_of_unreadable_repo_is_empty(self, tmp_path: Path) -> None:
+        """A folder git cannot open as a repo has no worktrees to discover."""
+        (tmp_path / "not-a-repo").mkdir()
+        assert _worktree_paths_of(tmp_path / "not-a-repo") == []
+
+    def test_unreadable_external_worktree_skipped(self, tmp_path: Path) -> None:
+        """A listed worktree that does not analyze as a repo is left out."""
+        root = self._tree(tmp_path)
+        outside = tmp_path / "outside-wt"
+        real = issues_for_one_folder
+
+        def fail_outside(
+            folder: Path, options: ScanOptions
+        ) -> tuple[RepoStats, RepoIdentity | None]:
+            if folder.resolve() == outside.resolve():
+                return {"error": "git error: fatal: broken"}, None
+            return real(folder, options)
+
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder", fail_outside
+        ):
+            result = issues_for_all_subfolders(
+                root, recurse=3, scan_external_worktrees=True
+            )
+
+        worktrees = result["a"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert set(worktrees) == {"a-wt"}  # `outside-wt` is left out
 
     def test_remotes_listed_once_across_threads(self, tmp_path: Path) -> None:
         """Threads asking for one repo's listing at once share a single listing."""
