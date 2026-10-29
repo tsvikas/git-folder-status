@@ -9,7 +9,7 @@ Run `git-folder-status -h` for help.
 import functools
 import sys
 from collections import ChainMap
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -163,7 +163,9 @@ def list_branches(repo: Repo) -> list[BranchRef]:
     """Return every local branch with its upstream, in one git call."""
     out = repo.git.for_each_ref(f"--format={_BRANCH_FORMAT}", "refs/heads")
     branches = []
-    for line in out.splitlines():
+    # git ends each record with "\n" only; `splitlines()` would also split a
+    # worktree path at characters such as U+2028
+    for line in out.split("\n") if out else []:
         fields = line.split("\0")
         refname, head, upstream, remote, remote_ref, track, worktree = fields
         # an upstream outside refs/remotes/ is a local branch, not a remote
@@ -518,45 +520,23 @@ def _branch_status(
     }
 
 
-def _iter_worktrees(repo: Repo) -> Iterator[tuple[Path, str | None]]:
-    """Yield `(path, branch)` for each usable worktree of `repo`.
+def _other_worktree(path: str, *, common_dir: Path, own: Path) -> str | None:
+    """Return a branch's `%(worktreepath)` if it is a worktree other than `own`.
 
-    Parses `git worktree list --porcelain`. `branch` is the checked-out branch
-    name, or `None` for a detached HEAD. Bare entries (no working tree) and
-    prunable entries (pointing at a missing directory) are skipped. The trailing
-    empty string flushes the final record, which has no blank line after it.
-    """
-    out = repo.git.worktree("list", "--porcelain")
-    path: Path | None = None
-    branch: str | None = None
-    skip = False
-    for line in [*out.splitlines(), ""]:
-        if line.startswith("worktree "):
-            path = Path(line.removeprefix("worktree "))
-            branch, skip = None, False
-        elif line == "bare" or line.startswith("prunable"):
-            skip = True
-        elif line.startswith("branch "):
-            branch = line.removeprefix("branch ").removeprefix("refs/heads/")
-        elif line == "" and path is not None:
-            if not skip:
-                yield path, branch
-            path, branch, skip = None, None, False
-
-
-def _other_worktree(repo: Repo, path: str) -> str | None:
-    """Return a branch's `%(worktreepath)` if it is a worktree other than `repo`.
-
-    The path names `repo` itself when the branch is checked out there. For a
-    repo whose work tree lives apart from its git dir (a submodule), git names
-    the git dir instead, and a bare repo's HEAD names the repo. A worktree
-    whose directory is gone (prunable) does not count either.
+    `common_dir` and `own` are the scanned repo's resolved git dir and work
+    tree. When the main worktree lives apart from its git dir (a submodule, a
+    `--separate-git-dir` repo), git names the git dir: that is mapped to the
+    real work tree. A bare repo's HEAD names the repo itself, which is no work
+    tree. A worktree whose directory is gone (prunable) does not count either.
     """
     if not path:
         return None
     resolved = Path(path).resolve()
-    own = {Path(repo.common_dir).resolve(), Path(repo.working_dir).resolve()}
-    if resolved in own or not resolved.is_dir():
+    if resolved == common_dir:
+        resolved = _main_worktree_dir(common_dir)
+        if resolved == common_dir:  # a bare repo
+            return None
+    if resolved == own or not resolved.is_dir():
         return None
     return resolved.as_posix()
 
@@ -608,10 +588,12 @@ def all_branches_status(
     branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
         return {}
+    common_dir = Path(repo.common_dir).resolve()
+    own = Path(repo.working_dir).resolve()
     result: dict[str, RepoStats] = {}
     for branch in branches:
         status = branch_status(repo, branch, remotes)
-        worktree = _other_worktree(repo, branch.worktree)
+        worktree = _other_worktree(branch.worktree, common_dir=common_dir, own=own)
         if worktree is not None:
             status["worktree"] = worktree
         result[branch.name] = status
@@ -1085,8 +1067,26 @@ def _attach_submodule_worktrees(
 
 
 def _list_worktree_paths(repo: Repo) -> list[Path]:
-    """Return the working-tree path of every usable worktree of `repo`."""
-    return [path for path, _ in _iter_worktrees(repo)]
+    """Return the working-tree path of every usable worktree of `repo`.
+
+    Parses `git worktree list --porcelain`. Bare entries (no working tree) and
+    prunable entries (pointing at a missing directory) are skipped. The trailing
+    empty string flushes the final record, which has no blank line after it.
+    """
+    out = repo.git.worktree("list", "--porcelain")
+    paths: list[Path] = []
+    path: Path | None = None
+    skip = False
+    for line in [*out.splitlines(), ""]:
+        if line.startswith("worktree "):
+            path, skip = Path(line.removeprefix("worktree ")), False
+        elif line == "bare" or line.startswith("prunable"):
+            skip = True
+        elif line == "" and path is not None:
+            if not skip:
+                paths.append(path)
+            path, skip = None, False
+    return paths
 
 
 def _discover_external_worktrees(

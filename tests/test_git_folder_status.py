@@ -1,5 +1,6 @@
 """Tests for git_folder_status module."""
 
+import dataclasses
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -631,19 +632,13 @@ class TestListBranches:
 
         branches = {b.name: b for b in list_branches(repo)}
 
-        # the checked-out branch names this work tree, as git spells the path
-        checked_out = Path(branches["main"].worktree)
-        assert checked_out.resolve() == (tmp_path / "clone").resolve()
+        # the checked-out branch names this work tree, in git's own spelling
+        main = branches.pop("main")
+        assert Path(main.worktree).resolve() == (tmp_path / "clone").resolve()
+        assert dataclasses.replace(main, worktree="") == BranchRef(
+            "main", head, "origin/main", "origin", "main", "ahead 1"
+        )
         assert branches == {
-            "main": BranchRef(
-                "main",
-                head,
-                "origin/main",
-                "origin",
-                "main",
-                "ahead 1",
-                branches["main"].worktree,
-            ),
             "old": BranchRef("old", head, "origin/old", "origin", "old", "gone"),
             "plain": BranchRef("plain", head),
             "on-local": BranchRef("on-local", head),
@@ -1845,10 +1840,36 @@ class TestBranchWorktree:
         with Repo.clone_from(
             str(tmp_path / "src"), tmp_path / "bare", bare=True
         ) as repo:
+            head_branch = repo.active_branch.name
             repo.git.worktree("add", str(tmp_path / "wt"), "-b", "feat")
             statuses = all_branches_status(repo)
         assert statuses["feat"]["worktree"] == (tmp_path / "wt").resolve().as_posix()
-        assert all("worktree" not in s for n, s in statuses.items() if n != "feat")
+        assert "worktree" not in statuses[head_branch]
+
+    def test_linked_worktree_of_submodule(self, tmp_path: Path) -> None:
+        """Seen from its linked worktree, a submodule's main worktree is named."""
+        parent = _init_repo_with_commit(tmp_path / "repo")
+        _init_repo_with_commit(tmp_path / "sub").close()
+        checkout = _add_submodule(parent, tmp_path / "sub", "sm")
+        parent.close()
+        with Repo(checkout) as sub:
+            sub.git.switch("-c", "work")
+            sub.git.worktree("add", str(tmp_path / "sm-wt"), "-b", "feat")
+        with Repo(tmp_path / "sm-wt") as linked:
+            statuses = all_branches_status(linked)
+        # git names the submodule's main worktree by its git dir
+        assert statuses["work"]["worktree"] == checkout.resolve().as_posix()
+        assert "worktree" not in statuses["feat"]
+
+    def test_worktree_path_with_line_separator(self, tmp_path: Path) -> None:
+        """A worktree path with a Unicode line separator stays one record."""
+        repo = _init_repo_with_commit(tmp_path / "repo")
+        odd = tmp_path / f"wt{chr(0x2028)}x"  # U+2028 LINE SEPARATOR
+        repo.git.worktree("add", str(odd), "-b", "feat")
+
+        assert all_branches_status(repo)["feat"]["worktree"] == (
+            odd.resolve().as_posix()
+        )
 
 
 def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
