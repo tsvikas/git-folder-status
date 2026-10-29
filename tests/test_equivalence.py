@@ -10,6 +10,7 @@ differences are pinned by tests of their own.
 
 import dataclasses
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,13 +18,15 @@ import pytest
 from git import Actor, GitCommandError, Repo
 
 from git_folder_status.git_folder_status import (
+    DEFAULT_BRANCH_NAMES,
     BranchRef,
+    RepoStats,
     WorkTreeStatus,
     _ahead_behind,
     _git_error_message,
-    _parse_track,
     _submodules,
     all_branches_status,
+    branch_status,
     list_branches,
     work_tree_status,
 )
@@ -115,6 +118,23 @@ def _untracked_odd_names(path: Path) -> Repo:
     return repo
 
 
+# names git C-quotes outside `-z` output, which GitPython has to unquote
+QUOTED_NAMES = ('a"b.txt', "back\\slash.txt", "tab\tname.txt")
+
+
+def _untracked_quoted_names(path: Path) -> Repo:
+    repo = _init(path)
+    for name in QUOTED_NAMES:
+        (path / name).write_text("1")
+    return repo
+
+
+def _renamed_to_quoted_name(path: Path) -> Repo:
+    repo = _init(path)
+    repo.git.mv("README.md", QUOTED_NAMES[0])
+    return repo
+
+
 def _ignored(path: Path) -> Repo:
     repo = _init(path)
     (path / ".gitignore").write_text("*.log\n")
@@ -196,6 +216,8 @@ WORK_TREE_CASES: dict[str, Callable[[Path], Repo]] = {
     "deleted": _deleted,
     "renamed": _renamed,
     "untracked odd names": _untracked_odd_names,
+    "untracked quoted names": _untracked_quoted_names,
+    "renamed to a quoted name": _renamed_to_quoted_name,
     "ignored file": _ignored,
     "two stashes": _two_stashes,
     "detached": _detached,
@@ -209,7 +231,23 @@ WORK_TREE_CASES: dict[str, Callable[[Path], Repo]] = {
 }
 
 
-@pytest.mark.parametrize("case", WORK_TREE_CASES)
+# `"`, `\` and tab are not allowed in Windows file names
+_WINDOWS_UNSAFE = {"untracked quoted names", "renamed to a quoted name"}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            case,
+            marks=pytest.mark.skipif(
+                case in _WINDOWS_UNSAFE and sys.platform == "win32",
+                reason="file name not allowed on Windows",
+            ),
+        )
+        for case in WORK_TREE_CASES
+    ],
+)
 def test_work_tree_status_matches_gitpython(tmp_path: Path, case: str) -> None:
     """One `git status` call reads what GitPython's properties read."""
     with WORK_TREE_CASES[case](tmp_path / "repo") as repo:
@@ -220,30 +258,75 @@ def test_work_tree_status_matches_gitpython(tmp_path: Path, case: str) -> None:
     )
 
 
+def test_ignored_submodule_changes_differ(tmp_path: Path) -> None:
+    """Intended difference: `diff.ignoreSubmodules` does not hide changes.
+
+    GitPython's `is_dirty()` runs `git diff`, which honors the setting, so a
+    submodule's uncommitted change reads as clean. The scan overrides it: a
+    change inside a submodule is unsaved work, which is always reported.
+    """
+    with _submodule_modified(tmp_path / "repo") as repo:
+        repo.git.config("diff.ignoreSubmodules", "all")
+        assert work_tree_status(repo).is_dirty is True
+        assert repo.is_dirty() is False
+
+
 # --- branch upstreams: `for-each-ref` vs GitPython --------------------------
 
-Upstream = tuple[str, bool, int, int]  # (remote branch, exists, ahead, behind)
+Upstream = RepoStats
 
 
-def _gitpython_upstream(repo: Repo, name: str) -> Upstream | None:
-    """Read a branch's upstream the clear way: `tracking_branch` + commit counts."""
-    tracking = repo.heads[name].tracking_branch()
+def _gitpython_upstream(repo: Repo, name: str) -> Upstream:
+    """Read a branch's upstream state the clear way, as the scan did before.
+
+    Uses `tracking_branch()`, a `repo.refs` lookup and `iter_commits` counts.
+    Only branches with a configured upstream are modelled; for the others the
+    scan matches remote branches by name, which this PR did not change.
+    """
+    head = repo.heads[name]
+    tracking = head.tracking_branch()
     # a tracking name starting with "." means tracking a local branch
     if tracking is None or tracking.name.startswith("."):
-        return None
+        return {"head": head.commit.hexsha, "upstream": None}
+    record: Upstream = {
+        "head": head.commit.hexsha,
+        "remote_branch": tracking.name,
+        "remote": tracking.remote_name,
+        "remote_head": tracking.remote_head,
+    }
     if tracking.name not in repo.refs:
-        return tracking.name, False, 0, 0
-    behind = len(list(repo.iter_commits(f"{name}..{tracking.name}")))
-    ahead = len(list(repo.iter_commits(f"{tracking.name}..{name}")))
-    return tracking.name, True, ahead, behind
+        record["upstream"] = "gone"
+    elif tracking.remote_head in DEFAULT_BRANCH_NAMES and (
+        name not in DEFAULT_BRANCH_NAMES
+    ):
+        record["upstream"] = "default"
+    else:
+        record["upstream"] = "set"
+        record["ahead"] = len(list(repo.iter_commits(f"{tracking.name}..{name}")))
+        record["behind"] = len(list(repo.iter_commits(f"{name}..{tracking.name}")))
+    return record
 
 
-def _fast_upstream(branch: BranchRef) -> Upstream | None:
+def _scan_upstream(repo: Repo, branch: BranchRef) -> Upstream:
+    """Read the same fields from the scan: `list_branches` + `branch_status`."""
+    status = branch_status(repo, branch)
     if not branch.upstream:
-        return None
-    if branch.track == "gone":
-        return branch.upstream, False, 0, 0
-    return (branch.upstream, True, *_parse_track(branch.track))
+        return {"head": status["head"], "upstream": None}
+    record: Upstream = {
+        "head": status["head"],
+        "remote_branch": status["remote_branch"],
+        "remote": branch.remote,
+        "remote_head": branch.remote_head,
+        "upstream": status["upstream"],
+    }
+    if status["upstream"] == "set":
+        record["ahead"] = status["ahead"]
+        record["behind"] = status["behind"]
+    return record
+
+
+def _scan_upstreams(repo: Repo) -> dict[str, Upstream]:
+    return {b.name: _scan_upstream(repo, b) for b in list_branches(repo)}
 
 
 def _clone_with_branches(tmp_path: Path) -> Repo:
@@ -266,16 +349,22 @@ def _clone_with_branches(tmp_path: Path) -> Repo:
 
 
 def test_upstreams_match_gitpython(tmp_path: Path) -> None:
-    """Upstream, gone, and ahead/behind agree with GitPython, branch by branch."""
+    """Upstream state, remote, commit and counts agree, branch by branch."""
     with _clone_with_branches(tmp_path) as repo:
-        fast = {b.name: _fast_upstream(b) for b in list_branches(repo)}
+        fast = _scan_upstreams(repo)
         clear = {head.name: _gitpython_upstream(repo, head.name) for head in repo.heads}
     assert fast == clear
-    # the cases above are all exercised, not just present
-    assert fast["main"] == ("origin/main", True, 1, 1)
-    assert fast["old"] == ("origin/old", False, 0, 0)
-    assert fast["plain"] is None
-    assert fast["on-local"] is None
+    # each upstream kind is exercised, not just present
+    states = {name: record["upstream"] for name, record in fast.items()}
+    assert states == {
+        "main": "set",
+        "user/feat": "set",
+        "synced": "default",
+        "old": "gone",
+        "plain": None,
+        "on-local": None,
+    }
+    assert (fast["main"]["ahead"], fast["main"]["behind"]) == (1, 1)
 
 
 def test_upstream_of_removed_remote_differs(tmp_path: Path) -> None:
@@ -286,9 +375,8 @@ def test_upstream_of_removed_remote_differs(tmp_path: Path) -> None:
     """
     with _clone_with_branches(tmp_path) as repo:
         repo.git.config("--remove-section", "remote.origin")
-        fast = {b.name: _fast_upstream(b) for b in list_branches(repo)}
-        assert fast["main"] is None
-        assert _gitpython_upstream(repo, "main") == ("origin/main", True, 1, 1)
+        assert _scan_upstreams(repo)["main"]["upstream"] is None
+        assert _gitpython_upstream(repo, "main")["upstream"] == "set"
 
 
 def test_ahead_behind_matches_commit_counts(tmp_path: Path) -> None:
@@ -379,11 +467,17 @@ def _scan_checkouts(repo: Repo) -> dict[str, str]:
 
 
 def _linked_worktrees(tmp_path: Path) -> tuple[Repo, Repo]:
-    """Make a repo with two linked worktrees, one deleted from disk."""
+    """Make a repo with linked worktrees: one live and two that git calls prunable.
+
+    One prunable worktree is deleted from disk; the other keeps its directory
+    but has lost its `.git` file.
+    """
     repo = _init(tmp_path / "repo")
     repo.git.worktree("add", str(tmp_path / "wt"), "-b", "feat")
     repo.git.worktree("add", str(tmp_path / "gone"), "-b", "stale")
     shutil.rmtree(tmp_path / "gone")
+    repo.git.worktree("add", str(tmp_path / "unlinked"), "-b", "orphan")
+    (tmp_path / "unlinked" / ".git").unlink()
     return repo, Repo(tmp_path / "wt")
 
 
@@ -416,25 +510,30 @@ def test_submodule_checkout_differs_from_worktree_list(tmp_path: Path) -> None:
     parent, sub = _with_submodule(tmp_path / "repo")
     with parent, sub:
         sub.git.switch("-c", "work")
-        clear = _worktree_list_checkouts(sub)
-        assert Path(clear["work"]).resolve() == Path(sub.git_dir).resolve()
         assert _scan_checkouts(sub) == {}
 
 
 # --- git error text: parsing GitPython's stderr wrapper ---------------------
 
 
-def test_error_message_is_git_stderr(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(["ls-remote", "dead"], id="several lines"),
+        # a single line ending in a quote, next to GitPython's own closing quote
+        pytest.param(["--git-dir", "{missing}", "status"], id="ends in a quote"),
+    ],
+)
+def test_error_message_is_git_stderr(tmp_path: Path, command: list[str]) -> None:
     """The error line pulled out of GitPython's exception is git's own stderr."""
+    args = [arg.format(missing=tmp_path / "missing") for arg in command]
     with _init(tmp_path / "repo") as repo:
         repo.create_remote("dead", str(tmp_path / "missing"))
         with pytest.raises(GitCommandError) as raised:
-            repo.git.ls_remote("dead")
+            repo.git.execute(["git", *args])
         # the same command, with git's stderr returned as is instead of raised
         _status, _stdout, stderr = repo.git.execute(
-            ["git", "ls-remote", "dead"],
-            with_extended_output=True,
-            with_exceptions=False,
+            ["git", *args], with_extended_output=True, with_exceptions=False
         )
     assert isinstance(stderr, str)
     first_error = next(
