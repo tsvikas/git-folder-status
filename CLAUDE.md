@@ -50,6 +50,8 @@ uv run just test-lowest 3.11 # Test with lowest dependency versions
 - **Flag contract**: every state that could lose work (anything not saved on a remote) is reported by default, with no flag.
   `--all` only adds context that is not an issue (listings of remotes, tags, heads, clean branches).
   `--slow` opts in to non-critical issue checks too costly for every scan (network calls: remote tags, remote reachability).
+- **Remote names**: Remote names are assumed to contain no `/`; such remotes are reported as `unsupported_remote_names`.
+  Build and parse remote-tracking refs only through `_RemoteBranch` (`.name`, `.path`, `_RemoteBranch.from_path`) and `remote_branch_names`, not GitPython's `ref.remote_name`/`remote_head` or a hand-written `refs/remotes/` prefix.
 - **Recursion Control**: Configurable depth limiting and directory exclusion
 - **Error Handling**: Graceful handling of broken repositories and permission issues
 

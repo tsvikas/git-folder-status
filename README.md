@@ -31,6 +31,10 @@ misses:
 - Detached HEAD
 - Branches without a remote
 - Branches ahead of or behind remote
+- Branches whose upstream cannot vouch for their work: none set, a local
+  branch, a deleted or never-fetched remote branch, a remote that is not
+  configured, or a remote's default branch; with the same-named remote branches that may hold
+  the work, and the remote default branches it is already merged into
 - Tags not on remote, or differing from remote (`--slow`)
 - Remotes that cannot be reached, and branches whose remote branch is gone
   or unreachable even if not yet pruned locally (`--slow`)
@@ -65,6 +69,30 @@ Use `git-folder-status --help` to learn more.
 Anything that could lose work (uncommitted, unpushed, or not on any remote) is
 always reported. `--all` only adds context that is not an issue, and `--slow`
 adds checks that need the network, such as remote tags and unreachable remotes.
+
+### Branches
+
+A reported branch looks like this:
+
+```yaml
+feature:
+  upstream: # the branch it tracks
+    name: origin/feature
+    issue: remote_branch_deleted # or counts: ahead / behind
+  merged_into: # remote default branches holding its commits
+    - origin/main
+  remote_candidates: # same-named remote branches, closest first
+    - name: fork/feature
+      ahead: 1 # 1 local commit is not there
+  worktree: ../feature-wt # checked out in another worktree
+```
+
+`upstream.issue` is one of `not_set`, `is_local_branch`,
+`remote_not_configured`, `remote_branch_not_fetched`, `remote_branch_deleted`,
+`remote_unreachable` (`--slow`) or `is_default_branch`. A candidate has no
+`ahead` when it holds all of the branch's commits; it may still have `behind`,
+for commits only it has. Branches with no upstream and nothing else to report
+are listed together under `branches_without_remote`.
 
 ## Contributing
 
