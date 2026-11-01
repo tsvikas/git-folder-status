@@ -92,7 +92,9 @@ feature:
 `remote_not_configured`, `remote_branch_not_fetched`, `remote_branch_deleted`,
 `remote_unreachable` (`--slow`) or `is_default_branch`. A candidate has no
 `ahead` when it holds all of the branch's commits; it may still have `behind`,
-for commits only it has. A branch whose commit is already in a remote default
+for commits only it has. A remote's default branches are the branch its
+`<remote>/HEAD` points to, plus `main`, `master` and `develop` if it has them
+(`develop` for gitflow repos). A branch whose commit is already in a remote default
 branch gets `merged_into` (e.g. `[origin/main]`) and only its same-named
 candidates: a merged commit is in every branch made from main since, so other
 names are not searched. A default branch already shown with counts (as the
