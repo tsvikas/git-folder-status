@@ -218,10 +218,11 @@ class BranchRef:
     `ahead N, behind M` summary of the branch against its upstream, or `gone`.
     `worktree` is the path of the worktree that has the branch checked out.
 
-    Two configured upstreams git does not resolve to a remote-tracking ref:
-    `local_upstream` names a local branch the upstream points at, and
+    Three configured upstreams git does not resolve to a remote-tracking ref:
+    `local_upstream` names a local branch the upstream points at,
     `unresolved_upstream` (`origin/feature`) one on a remote that is not
-    configured.
+    configured, and `unfetched_upstream` one on a configured remote whose
+    fetch settings never fetch it (a single-branch clone).
     """
 
     name: str
@@ -233,6 +234,7 @@ class BranchRef:
     worktree: str = ""
     local_upstream: str = ""
     unresolved_upstream: str = ""
+    unfetched_upstream: str = ""
 
 
 # fields separated by NUL (`%00`), which no ref name can contain
@@ -284,7 +286,11 @@ def list_branches(repo: Repo) -> list[BranchRef]:
 def _with_unresolved_upstreams(
     repo: Repo, branches: list[BranchRef]
 ) -> list[BranchRef]:
-    """Fill in `unresolved_upstream` for upstreams on a remote not configured."""
+    """Fill in an upstream configured for a branch that git resolves to nothing.
+
+    On a remote that is not configured it is `unresolved_upstream`; on a
+    configured remote whose fetch settings do not fetch it, `unfetched_upstream`.
+    """
     configured = {remote.name for remote in repo.remotes}
     result = []
     with repo.config_reader() as config:
@@ -292,15 +298,14 @@ def _with_unresolved_upstreams(
             section = f'branch "{branch.name}"'
             remote = str(config.get_value(section, "remote", ""))
             merge = str(config.get_value(section, "merge", ""))
-            if (
-                not branch.upstream
-                and not branch.local_upstream
-                and remote
-                and merge
-                and remote not in {".", *configured}
-            ):
-                unresolved = f"{remote}/{merge.removeprefix('refs/heads/')}"
-                result.append(replace(branch, unresolved_upstream=unresolved))
+            if branch.upstream or branch.local_upstream or not remote or not merge:
+                result.append(branch)
+                continue
+            name = _RemoteBranch(remote, merge.removeprefix("refs/heads/")).name
+            if remote in configured:
+                result.append(replace(branch, unfetched_upstream=name))
+            elif remote != ".":
+                result.append(replace(branch, unresolved_upstream=name))
             else:
                 result.append(branch)
     return result
@@ -505,23 +510,23 @@ def _push_remote(repo: Repo, branch: str) -> str:
     return "origin"
 
 
-def _matching_remote_branches(repo: Repo, branch: str) -> list[_RemoteBranch]:
+def _matching_remote_branches(
+    branch_names: dict[str, frozenset[str]], branch: str
+) -> list[_RemoteBranch]:
     """Find the remote branches that match `branch` by name, in config order.
 
     Catches branches that were pushed without `-u`:
     the remote branch exists, but no upstream is configured.
-    Matches the branch part of the name (after `refs/remotes/<remote>/`), by
-    suffix, so `origin/user/feature` matches a local `feature`. Only configured
-    remotes are searched, not refs a removed remote left.
+    `branch_names` is `remote_branch_names(repo)`: only configured remotes are
+    searched, not refs a removed remote left. Matches the branch part of the
+    name, by suffix, so `origin/user/feature` matches a local `feature`.
     """
-    matches = []
-    for remote in repo.remotes:
-        prefix = f"refs/remotes/{remote.name}/"
-        for ref in remote.refs:
-            name = ref.path.removeprefix(prefix)
-            if name == branch or name.endswith(f"/{branch}"):
-                matches.append(_RemoteBranch(remote.name, name))
-    return matches
+    return [
+        _RemoteBranch(remote, name)
+        for remote, names in branch_names.items()
+        for name in sorted(names)
+        if name == branch or name.endswith(f"/{branch}")
+    ]
 
 
 def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
@@ -532,9 +537,13 @@ def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
 
 
 def _remote_candidates(
-    repo: Repo, branch: str, upstream: str, remotes: RemoteListing | None
-) -> list[RepoStats]:
-    """Return the remote branches named like `branch`, as report entries.
+    repo: Repo,
+    branch: str,
+    upstream: str,
+    remotes: RemoteListing | None,
+    branch_names: dict[str, frozenset[str]],
+) -> list[tuple[_RemoteBranch, RepoStats]]:
+    """Return the remote branches named like `branch`, with their report entries.
 
     Each entry has the remote branch's `name`, and its `ahead`/`behind` counts
     against the local branch when non-zero. The branch's own `upstream` is left
@@ -544,12 +553,17 @@ def _remote_candidates(
     Order: on the remote `git push` would use, then other `<remote>/<branch>`
     names, then prefixed names; closest (fewest differing commits) first in each.
     """
-    exact = {f"{remote.name}/{branch}" for remote in repo.remotes}
-    pushed = f"{_push_remote(repo, branch)}/{branch}"
-    ranked: list[tuple[int, int, RepoStats]] = []
-    for ref in _matching_remote_branches(repo, branch):
-        if ref.name == upstream:
-            continue
+    found = [
+        ref
+        for ref in _matching_remote_branches(branch_names, branch)
+        if ref.name != upstream
+    ]
+    if not found:
+        return []
+    exact = {_RemoteBranch(remote, branch).name for remote in branch_names}
+    pushed = _RemoteBranch(_push_remote(repo, branch), branch).name
+    ranked: list[tuple[int, int, _RemoteBranch, RepoStats]] = []
+    for ref in found:
         state = "ok" if remotes is None else remotes.ref_state(ref.remote, ref.branch)
         if state == "gone":
             continue
@@ -565,20 +579,31 @@ def _remote_candidates(
                 entry["behind"] = behind
             distance = ahead + behind
         rank = 0 if ref.name == pushed else 1 if ref.name in exact else 2
-        ranked.append((rank, distance, entry))
-    return [entry for _rank, _distance, entry in sorted(ranked, key=lambda r: r[:2])]
+        ranked.append((rank, distance, ref, entry))
+    ranked.sort(key=lambda r: r[:2])
+    return [(ref, entry) for _rank, _distance, ref, entry in ranked]
 
 
-def branch_status(
+def branch_status(  # noqa: PLR0913
     repo: Repo,
     branch: BranchRef,
     remotes: RemoteListing | None = None,
     defaults: dict[str, frozenset[str]] | None = None,
+    *,
+    branch_names: dict[str, frozenset[str]] | None = None,
+    merged: Iterable[str] = (),
+    state: RepoStats | None = None,
 ) -> RepoStats:
     """Return the upstream relationship of a single branch.
 
     `defaults` maps each remote to its default branch names, as
     `remote_default_branches` reads them; without it, main/master count.
+    `branch_names` is `remote_branch_names(repo)`, read here when not given.
+    `merged` names the remote default branches holding the branch's head (see
+    `_merged_into`); those not already reported with counts (the usable
+    upstream, or a candidate) become `merged_into`, since having no `ahead`
+    there says the same. `state` is the branch's `_branch_status`, when the
+    caller already has it.
 
     The `upstream` field discriminates mutually exclusive states; every state
     but `set` is an issue (see `_UPSTREAM_ISSUES` for how each is reported):
@@ -588,6 +613,9 @@ def branch_status(
     - `local`: the upstream is a local branch, so it says nothing about what is
       pushed.
     - `not_configured`: the upstream is on a remote that is not configured.
+    - `not_fetched`: the upstream is on a configured remote whose fetch
+      settings never fetch it (a single-branch clone), so there is nothing to
+      compare with.
     - `gone`: the upstream's remote exists, but the branch was deleted there.
     - `unreachable`: the upstream's remote could not be listed (`--slow`).
     - `default`: the branch tracks its remote's default branch under another
@@ -603,12 +631,21 @@ def branch_status(
     `unreachable` apart, and tell a stale remote-tracking ref from a live one:
     with it, a ref the remote no longer holds counts as `gone`.
     """
-    status = _branch_status(branch, remotes, defaults)
+    status = dict(state or _branch_status(branch, remotes, defaults))
+    upstream = str(status.get("remote_branch", ""))
+    reported = {upstream} if status["upstream"] == "set" else set()
     if status["upstream"] != "set":
-        upstream = str(status.get("remote_branch", ""))
-        candidates = _remote_candidates(repo, branch.name, upstream, remotes)
+        if branch_names is None:
+            branch_names = remote_branch_names(repo)
+        candidates = _remote_candidates(
+            repo, branch.name, upstream, remotes, branch_names
+        )
         if candidates:
-            status["candidates"] = candidates
+            status["candidates"] = [entry for _ref, entry in candidates]
+            reported.update(ref.name for ref, _entry in candidates)
+    merged_into = [ref for ref in merged if ref not in reported]
+    if merged_into:
+        status["merged_into"] = merged_into
     return status
 
 
@@ -640,6 +677,8 @@ def _unresolved_upstream_status(branch: BranchRef) -> RepoStats:
             "upstream": "not_configured",
             "remote_branch": branch.unresolved_upstream,
         }
+    if branch.unfetched_upstream:
+        return {"upstream": "not_fetched", "remote_branch": branch.unfetched_upstream}
     return {"upstream": "not_set"}
 
 
@@ -726,42 +765,41 @@ def all_branches_status(
 
     A branch whose head is reachable from remote default branches (see
     `remote_default_branches`) carries a `merged_into` list naming them: its
-    commits are safe there. Refs already reported with counts (its usable
-    upstream, or a candidate) are left out: having no `ahead` says the same.
-    It is computed only when some branch will be reported (an issue, or
-    commits ahead), or for `include_all`.
+    commits are safe there (see `branch_status`). The lists are computed when
+    any branch differs from its upstream at all (an issue, or commits ahead or
+    behind), whatever the report options, or for `include_all`; so whether a
+    reported branch gets one never depends on the other branches.
     """
     branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
         return {}
     common_dir = Path(repo.common_dir).resolve()
     own = Path(repo.working_dir).resolve()
-    defaults = remote_default_branches(repo)
+    branch_names = remote_branch_names(repo)
+    defaults = remote_default_branches(repo, branch_names)
+    states = {b.name: _branch_status(b, remotes, defaults) for b in branches}
+    merged: dict[str, list[str]] = {}
+    # skip the git calls when no branch can use the answer
+    if include_all or any(
+        st["upstream"] != "set" or st.get("ahead") or st.get("behind")
+        for st in states.values()
+    ):
+        merged = _merged_into(repo, remotes, defaults)
     result: dict[str, RepoStats] = {}
     for branch in branches:
-        status = branch_status(repo, branch, remotes, defaults)
+        status = branch_status(
+            repo,
+            branch,
+            remotes,
+            defaults,
+            branch_names=branch_names,
+            merged=merged.get(branch.name, ()),
+            state=states[branch.name],
+        )
         worktree = _other_worktree(branch.worktree, common_dir=common_dir, own=own)
         if worktree is not None:
             status["worktree"] = worktree
         result[branch.name] = status
-    # skip the git calls when no branch can use the answer
-    if include_all or any(
-        st["upstream"] != "set" or st.get("ahead") for st in result.values()
-    ):
-        merged = _merged_into(repo, remotes, defaults)
-        for name, status in result.items():
-            # a ref already reported with counts (the usable upstream, or a
-            # candidate) shows it is merged there by having no `ahead`
-            listed = {
-                str(entry["name"])
-                for entry in status.get("candidates", [])  # type: ignore[union-attr]
-                if isinstance(entry, dict)
-            }
-            if status["upstream"] == "set":
-                listed.add(str(status["remote_branch"]))
-            refs = [ref for ref in merged.get(name, []) if ref not in listed]
-            if refs:
-                status["merged_into"] = refs
     return result
 
 
@@ -780,6 +818,7 @@ _UPSTREAM_ISSUES = {
     "not_set": "not_set",
     "local": "is_local_branch",
     "not_configured": "remote_not_configured",
+    "not_fetched": "remote_branch_not_fetched",
     "gone": "remote_branch_deleted",
     "unreachable": "remote_unreachable",
     "default": "is_default_branch",

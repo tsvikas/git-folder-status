@@ -32,8 +32,8 @@ misses:
 - Branches without a remote
 - Branches ahead of or behind remote
 - Branches whose upstream cannot vouch for their work: none set, a local
-  branch, a deleted remote branch, a remote that is not configured, or a
-  remote's default branch; with the same-named remote branches that may hold
+  branch, a deleted or never-fetched remote branch, a remote that is not
+  configured, or a remote's default branch; with the same-named remote branches that may hold
   the work, and the remote default branches it is already merged into
 - Tags not on remote, or differing from remote (`--slow`)
 - Remotes that cannot be reached, and branches whose remote branch is gone
@@ -88,9 +88,10 @@ feature:
 ```
 
 `upstream.issue` is one of `not_set`, `is_local_branch`,
-`remote_not_configured`, `remote_branch_deleted`, `remote_unreachable`
-(`--slow`) or `is_default_branch`. A candidate has no counts when it holds all
-of the branch's commits. Branches with no upstream and nothing else to report
+`remote_not_configured`, `remote_branch_not_fetched`, `remote_branch_deleted`,
+`remote_unreachable` (`--slow`) or `is_default_branch`. A candidate has no
+`ahead` when it holds all of the branch's commits; it may still have `behind`,
+for commits only it has. Branches with no upstream and nothing else to report
 are listed together under `branches_without_remote`.
 
 ## Contributing

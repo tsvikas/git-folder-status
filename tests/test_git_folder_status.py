@@ -870,6 +870,53 @@ class TestUpstreamIssues:
             "remote_candidates": [{"name": "company/main"}],
         }
 
+    def test_upstream_never_fetched(self, tmp_path: Path) -> None:
+        """A single-branch clone's pushed branch has an upstream with no local copy.
+
+        `push -u` records the upstream, but the clone fetches only `main`, so
+        git resolves no upstream. It is named, not taken for "none set".
+        """
+        with _init_repo_with_commit(tmp_path / "source") as source:
+            source.git.branch("-M", "main")
+        with Repo.clone_from(
+            str(tmp_path / "source"),
+            tmp_path / "clone",
+            multi_options=["--single-branch"],
+        ) as repo:
+            repo.git.switch("-c", "feature")
+            _commit_file(repo, "feature.txt")
+            repo.git.push("-u", "origin", "feature")
+            assert not repo.git.for_each_ref("refs/remotes/origin/feature")
+            result = repo_issues_in_branches(repo, ScanOptions())
+
+        assert result["branches"] == {
+            "feature": {
+                "upstream": {
+                    "name": "origin/feature",
+                    "issue": "remote_branch_not_fetched",
+                }
+            }
+        }
+
+    def test_merged_into_on_behind_only_branch(self, tmp_path: Path) -> None:
+        """With -b, a behind-only branch gets `merged_into` with no other issue."""
+        with self._clone(tmp_path) as repo:
+            repo.git.push("origin", "main:feature")
+            repo.git.branch("--track", "feature", "origin/feature")
+            with Repo(tmp_path / "source") as source:
+                source.git.switch("feature")
+                _commit_file(source, "more.txt")
+                source.git.switch("main")
+            repo.git.fetch()
+            result = repo_issues_in_branches(repo, ScanOptions(include_behind=True))
+
+        assert result["branches"] == {
+            "feature": {
+                "upstream": {"name": "origin/feature", "behind": 1},
+                "merged_into": ["origin/main"],
+            }
+        }
+
     def test_tracking_default_branch_gets_candidates(self, tmp_path: Path) -> None:
         """A branch made from origin/main, pushed without -u, shows its pushed copy."""
         with self._clone(tmp_path) as repo:
@@ -920,8 +967,9 @@ class TestRemoteListing:
 
     @staticmethod
     def _clone(tmp_path: Path) -> Repo:
-        source = _init_repo_with_commit(tmp_path / "source")
-        source.git.branch("-M", "main")
+        # close the source: GitPython's helper processes warn when collected
+        with _init_repo_with_commit(tmp_path / "source") as source:
+            source.git.branch("-M", "main")
         return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
 
     def _clone_with_dead_remote(self, tmp_path: Path) -> Repo:
@@ -982,8 +1030,8 @@ class TestRemoteListing:
 
     def test_remote_name_with_slash_reported(self, tmp_path: Path) -> None:
         """A remote named with `/` is unsupported, so the report names it."""
-        repo = self._clone(tmp_path)
-        repo.git.remote("rename", "origin", "team/fork")
+        with self._clone(tmp_path) as repo:
+            repo.git.remote("rename", "origin", "team/fork")
 
         result, _ = issues_for_one_folder(tmp_path / "clone", ScanOptions())
 
