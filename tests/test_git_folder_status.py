@@ -429,12 +429,65 @@ class TestRepoIssuesInStats:
 
             result = repo_issues_in_stats(mock_repo, ScanOptions())
 
-            # Only non-zero/non-empty values should be returned
+            # Only non-zero/non-empty values should be returned, plus the
+            # branch the uncommitted changes are on
             expected = {
                 "is_dirty": True,
                 "untracked_files": ["file.txt"],
+                "active_branch": "main",
             }
             assert result == expected
+
+    def test_active_branch_only_with_work_tree_changes(self) -> None:
+        """The checked-out branch is context for changes, never shown alone."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch("git_folder_status.git_folder_status.repo_stats") as mock_repo_stats:
+            mock_repo_stats.return_value = {
+                "is_dirty": False,
+                "untracked_files": [],
+                "stash_count": 2,
+                "is_detached_head": False,
+                "active_branch": "main",
+            }
+
+            result = repo_issues_in_stats(mock_repo, ScanOptions())
+
+        assert result == {"stash_count": 2}
+
+    def test_active_branch_with_untracked_files_only(self) -> None:
+        """Untracked files alone also name the checked-out branch."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch("git_folder_status.git_folder_status.repo_stats") as mock_repo_stats:
+            mock_repo_stats.return_value = {
+                "is_dirty": False,
+                "untracked_files": ["new.txt"],
+                "stash_count": 0,
+                "is_detached_head": False,
+                "active_branch": "feat",
+            }
+
+            result = repo_issues_in_stats(mock_repo, ScanOptions())
+
+        assert result == {"untracked_files": ["new.txt"], "active_branch": "feat"}
+
+    def test_no_active_branch_on_dirty_detached_head(self) -> None:
+        """A dirty detached HEAD has no branch to name; it is reported as such."""
+        mock_repo = Mock(spec=Repo)
+
+        with patch("git_folder_status.git_folder_status.repo_stats") as mock_repo_stats:
+            mock_repo_stats.return_value = {
+                "is_dirty": True,
+                "untracked_files": [],
+                "stash_count": 0,
+                "is_detached_head": True,
+                "active_branch": None,
+            }
+
+            result = repo_issues_in_stats(mock_repo, ScanOptions())
+
+        assert result == {"is_dirty": True, "is_detached_head": True}
 
     def test_include_all_flag(self) -> None:
         """Test include_all flag includes all stats."""
@@ -1412,7 +1465,9 @@ class TestIssuesForOneFolder:
         parent.close()
 
         result, _ = issues_for_one_folder(tmp_path / "repo", ScanOptions())
-        assert result["/sm"] == {"untracked_files": ["untracked.txt"]}
+        submodule = result["/sm"]
+        assert isinstance(submodule, dict)
+        assert submodule["untracked_files"] == ["untracked.txt"]
 
     def test_bare_repository(self, tmp_path: Path) -> None:
         """Test that a bare repo is analyzed without errors."""
@@ -2024,7 +2079,10 @@ class TestWorktreeGrouping:
         assert isinstance(submodule, dict)
         worktrees = submodule["worktrees"]
         assert isinstance(worktrees, dict)
-        assert worktrees["sub-wt"] == {"untracked_files": ["dirty.txt"]}
+        assert worktrees["sub-wt"] == {
+            "untracked_files": ["dirty.txt"],
+            "active_branch": "wt-branch",
+        }
 
     def test_external_worktree_ignored_by_default(self, tmp_path: Path) -> None:
         """A worktree outside the scan is not analyzed without the flag."""
@@ -2051,7 +2109,10 @@ class TestWorktreeGrouping:
         # the external worktree is keyed by its path relative to the scan base
         key = next(iter(worktrees))
         assert key.endswith("outside-wt")
-        assert worktrees[key] == {"untracked_files": ["dirty.txt"]}
+        assert worktrees[key] == {
+            "untracked_files": ["dirty.txt"],
+            "active_branch": "wt-branch",
+        }
 
 
 class TestSimplifyReport:
