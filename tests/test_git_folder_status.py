@@ -953,6 +953,69 @@ class TestUpstreamIssues:
             ],
         }
 
+    def test_stacked_branch_is_a_candidate(self, tmp_path: Path) -> None:
+        """A remote branch built on top of this one holds its work: a candidate."""
+        with self._clone(tmp_path) as repo:
+            repo.git.switch("-c", "a")
+            _commit_file(repo, "a.txt")
+            repo.git.switch("-c", "b")
+            _commit_file(repo, "b1.txt")
+            _commit_file(repo, "b2.txt")
+            repo.git.push("origin", "b")  # only the branch stacked on `a`
+            repo.git.switch("main")
+            branches = self._branches(repo)
+
+        assert branches["a"] == {
+            "upstream": {"issue": "not_set"},
+            "remote_candidates": [{"name": "origin/b", "behind": 2}],
+        }
+
+    def test_same_name_before_other_names(self, tmp_path: Path) -> None:
+        """A same-named candidate comes first, even when another name is closer."""
+        with self._clone(tmp_path) as repo:
+            repo.git.switch("-c", "wip")
+            _commit_file(repo, "one.txt")
+            repo.git.push("origin", "wip")  # an older push, 1 commit behind
+            _commit_file(repo, "two.txt")
+            repo.git.push("origin", "wip:wip-v2")  # pushed again under a new name
+            repo.git.switch("main")
+            branches = self._branches(repo)
+
+        assert branches["wip"] == {
+            "upstream": {"issue": "not_set"},
+            "remote_candidates": [
+                {"name": "origin/wip", "ahead": 1},
+                {"name": "origin/wip-v2"},
+            ],
+        }
+
+    def test_merged_branch_not_searched(self, tmp_path: Path) -> None:
+        """A merged commit is in every later branch, so those are not listed."""
+        with self._clone(tmp_path) as repo:
+            repo.git.branch("scratch")  # on main's commit
+            repo.git.push("origin", "main:later")  # a branch made from main
+            branches = self._branches(repo)
+
+        assert branches["scratch"] == {
+            "upstream": {"issue": "not_set"},
+            "merged_into": ["origin/main"],
+        }
+
+    def test_removed_remote_refs_not_searched(self, tmp_path: Path) -> None:
+        """Refs a removed remote left behind are no candidates."""
+        with self._clone(tmp_path) as repo:
+            self._add_remote(repo, tmp_path, "old")
+            repo.git.switch("-c", "wip")
+            _commit_file(repo, "wip.txt")
+            repo.git.push("old", "wip:copy")
+            repo.git.fetch("old")
+            repo.git.config("--remove-section", "remote.old")
+            repo.git.switch("main")
+            assert repo.git.for_each_ref("refs/remotes/old")  # still there
+            branches = self._branches(repo)
+
+        assert branches["wip"] == {"upstream": {"issue": "not_set"}}
+
 
 class TestRemoteListing:
     """Test `--slow` checks against what each remote actually holds."""
@@ -1054,8 +1117,44 @@ class TestRemoteListing:
         repo.git.remote("set-url", "dead", str(tmp_path / "deleted"))
 
         status = all_branches_status(repo, list_remotes(repo))["scratch"]
-        assert status == {"upstream": "not_set", "head": status["head"]}
+        # not merged; dead/main may still hold the commit, but cannot vouch
+        assert "merged_into" not in status
+        assert status["candidates"] == [
+            {"name": "dead/main", "issue": "remote_unreachable"}
+        ]
         assert "merged_into" in all_branches_status(repo)["scratch"]
+
+    def test_merged_branch_not_searched_when_offline(self, tmp_path: Path) -> None:
+        """Offline, a merged branch lists its default branch, not every later one.
+
+        Every branch made from main since holds a merged commit, so searching
+        other names would list them all, unreachable, with no counts.
+        """
+        with self._clone(tmp_path) as repo:
+            with Repo(tmp_path / "source") as source:
+                for name in ("feat1", "feat2"):
+                    source.git.branch(name)
+            repo.git.fetch()
+            repo.git.branch("scratch")  # no upstream, merged into origin/main
+            repo.git.remote("set-url", "origin", str(tmp_path / "deleted"))
+            status = all_branches_status(repo, list_remotes(repo))["scratch"]
+
+        assert "merged_into" not in status
+        assert status["candidates"] == [
+            {"name": "origin/main", "issue": "remote_unreachable"}
+        ]
+
+    def test_no_default_branch_known_skips_search(self, tmp_path: Path) -> None:
+        """With no default branch known, other names are not searched at all."""
+        with _init_repo_with_commit(tmp_path / "source") as source:
+            source.git.branch("-M", "develop")
+            source.git.branch("feat")
+        with Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone") as repo:
+            repo.git.update_ref("--no-deref", "-d", "refs/remotes/origin/HEAD")
+            repo.git.branch("scratch")  # no upstream; origin/feat holds it
+            status = all_branches_status(repo)["scratch"]
+
+        assert "candidates" not in status
 
     def test_stale_ref_on_live_remote_is_gone(self, tmp_path: Path) -> None:
         """A remote branch deleted but not yet pruned locally is `gone`.

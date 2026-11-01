@@ -536,26 +536,32 @@ def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
     return int(ahead), int(behind)
 
 
-def _remote_candidates(
+def _remote_candidates(  # noqa: PLR0913
     repo: Repo,
     branch: str,
     upstream: str,
     remotes: RemoteListing | None,
+    *,
     branch_names: dict[str, frozenset[str]],
+    containing: Iterable[_RemoteBranch] = (),
 ) -> list[tuple[_RemoteBranch, RepoStats]]:
-    """Return the remote branches named like `branch`, with their report entries.
+    """Return the remote branches that may hold `branch`'s work, with entries.
 
-    Each entry has the remote branch's `name`, and its `ahead`/`behind` counts
-    against the local branch when non-zero. The branch's own `upstream` is left
-    out. With a `remotes` listing, a remote branch deleted on its remote is
-    left out too (it holds nothing), and one on an unreachable remote is kept
-    with `issue: remote_unreachable` and no counts, since it may still exist.
-    Order: on the remote `git push` would use, then other `<remote>/<branch>`
-    names, then prefixed names; closest (fewest differing commits) first in each.
+    Those are the remote branches named like `branch`, plus `containing`:
+    other remote branches holding its commit (a branch stacked on it, or one
+    pushed under another name). Each entry has the remote branch's `name`, and
+    its `ahead`/`behind` counts against the local branch when non-zero. The
+    branch's own `upstream` is left out. With a `remotes` listing, a remote
+    branch deleted on its remote is left out too (it holds nothing), and one on
+    an unreachable remote is kept with `issue: remote_unreachable` and no
+    counts, since it may still exist. Order: `<remote>/<branch>` on the remote
+    `git push` would use, then on other remotes, then all others; closest
+    (fewest differing commits) first in each.
     """
+    named = _matching_remote_branches(branch_names, branch)
     found = [
         ref
-        for ref in _matching_remote_branches(branch_names, branch)
+        for ref in [*named, *(ref for ref in containing if ref not in named)]
         if ref.name != upstream
     ]
     if not found:
@@ -593,6 +599,7 @@ def branch_status(  # noqa: PLR0913
     branch_names: dict[str, frozenset[str]] | None = None,
     merged: Iterable[str] = (),
     state: RepoStats | None = None,
+    containing: Iterable[_RemoteBranch] = (),
 ) -> RepoStats:
     """Return the upstream relationship of a single branch.
 
@@ -625,7 +632,8 @@ def branch_status(  # noqa: PLR0913
     `remote_branch` names the configured upstream, except for `not_set`.
     Ahead/behind counts are computed for `set` only: against a default branch
     they would measure drift, not unpushed work. Every other state carries
-    `candidates`, the same-named remote branches (see `_remote_candidates`).
+    `candidates`, the same-named remote branches plus `containing`, the remote
+    branches holding its commit under another name (see `_remote_candidates`).
 
     Only a `remotes` listing (a network call, under `--slow`) can tell
     `unreachable` apart, and tell a stale remote-tracking ref from a live one:
@@ -638,7 +646,12 @@ def branch_status(  # noqa: PLR0913
         if branch_names is None:
             branch_names = remote_branch_names(repo)
         candidates = _remote_candidates(
-            repo, branch.name, upstream, remotes, branch_names
+            repo,
+            branch.name,
+            upstream,
+            remotes,
+            branch_names=branch_names,
+            containing=containing,
         )
         if candidates:
             status["candidates"] = [entry for _ref, entry in candidates]
@@ -725,32 +738,62 @@ def _other_worktree(path: str, *, common_dir: Path, own: Path) -> str | None:
 
 
 def _merged_into(
-    repo: Repo,
-    remotes: RemoteListing | None,
-    defaults: dict[str, frozenset[str]],
-) -> dict[str, list[str]]:
+    repo: Repo, defaults: dict[str, frozenset[str]]
+) -> dict[str, list[_RemoteBranch]]:
     """Map each local branch to the remote default branches that contain its head.
 
     `defaults` holds each configured remote's default branch names. Runs one
     `git for-each-ref --merged` per remote default branch, not one query per
-    local branch; refs are listed in remote order. With a `remotes` listing, a
-    default branch the remote no longer holds (or an unreachable remote's) does
-    not count: being contained in it keeps nothing safe.
+    local branch; refs are listed in remote order. Every local ref counts here;
+    `_still_held` drops those a `remotes` listing shows are gone or unreachable.
     """
-    merged: dict[str, list[str]] = {}
+    merged: dict[str, list[_RemoteBranch]] = {}
     for remote, names in defaults.items():
         for name in sorted(names):
-            if remotes is not None and remotes.ref_state(remote, name) != "ok":
-                continue
             ref = _RemoteBranch(remote, name)
             out = repo.git.for_each_ref(
                 "--merged", ref.path, "--format=%(refname)", "refs/heads"
             )
             for refname in out.splitlines():
-                merged.setdefault(refname.removeprefix("refs/heads/"), []).append(
-                    ref.name
-                )
+                merged.setdefault(refname.removeprefix("refs/heads/"), []).append(ref)
     return merged
+
+
+def _still_held(
+    refs: Iterable[_RemoteBranch], remotes: RemoteListing | None
+) -> list[str]:
+    """Return the names of `refs` their remote still holds.
+
+    With a `remotes` listing, a default branch the remote no longer holds (or an
+    unreachable remote's) does not count: being contained in it keeps nothing
+    safe.
+    """
+    return [
+        ref.name
+        for ref in refs
+        if remotes is None or remotes.ref_state(ref.remote, ref.branch) == "ok"
+    ]
+
+
+def _containing_remote_branches(
+    repo: Repo, commit: str, branch_names: dict[str, frozenset[str]]
+) -> list[_RemoteBranch]:
+    """Return the branches on configured remotes whose history holds `commit`.
+
+    One `git for-each-ref --contains` over each configured remote's refs (the
+    remotes of `branch_names`), so refs a removed remote left behind are not
+    searched. A remote's `HEAD`, an alias of one of its branches, is skipped.
+    """
+    remotes = list(branch_names)
+    prefixes = [_RemoteBranch(remote, "").path for remote in remotes]
+    out = repo.git.for_each_ref("--contains", commit, "--format=%(refname)", *prefixes)
+    found = []
+    for refname in out.splitlines():
+        for remote in remotes:
+            ref = _RemoteBranch.from_path(remote, refname)
+            if ref is not None and ref.branch != "HEAD":
+                found.append(ref)
+    return found
 
 
 def all_branches_status(
@@ -773,6 +816,15 @@ def all_branches_status(
     any branch will be reported (see `_branch_has_issue`, with
     `include_behind`), or for `include_all`. A reported branch always triggers
     that itself, so whether it gets a list never depends on the other branches.
+
+    A branch whose upstream has an issue also gets, as candidates, the remote
+    branches holding its commit under another name (see
+    `_containing_remote_branches`), unless its commit is in a local copy of a
+    remote default branch, even one a `remotes` listing shows unreachable: such
+    a commit is held by every branch made from main since. Such an unreachable
+    default branch is listed as a candidate instead, since it may still hold
+    the work. With no default branch known for any remote there is no way to
+    tell, so then no other names are searched.
     """
     branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
@@ -782,22 +834,39 @@ def all_branches_status(
     branch_names = remote_branch_names(repo)
     defaults = remote_default_branches(repo, branch_names)
     states = {b.name: _branch_status(b, remotes, defaults) for b in branches}
-    merged: dict[str, list[str]] = {}
+    held: dict[str, list[_RemoteBranch]] = {}
     # skip the git calls when no branch can use the answer
     if include_all or any(
         _branch_has_issue(st, include_behind=include_behind) for st in states.values()
     ):
-        merged = _merged_into(repo, remotes, defaults)
+        held = _merged_into(repo, defaults)
+    search_other_names = any(defaults.values())
     result: dict[str, RepoStats] = {}
     for branch in branches:
+        containing: list[_RemoteBranch] = []
+        if states[branch.name]["upstream"] != "set":
+            if held.get(branch.name):
+                # merged: no search; a default branch `--slow` could not reach
+                # still may hold it, so it is listed as such a candidate
+                containing = [
+                    ref
+                    for ref in held[branch.name]
+                    if remotes is not None
+                    and remotes.ref_state(ref.remote, ref.branch) == "unreachable"
+                ]
+            elif search_other_names:
+                containing = _containing_remote_branches(
+                    repo, branch.head, branch_names
+                )
         status = branch_status(
             repo,
             branch,
             remotes,
             defaults,
             branch_names=branch_names,
-            merged=merged.get(branch.name, ()),
+            merged=_still_held(held.get(branch.name, ()), remotes),
             state=states[branch.name],
+            containing=containing,
         )
         worktree = _other_worktree(branch.worktree, common_dir=common_dir, own=own)
         if worktree is not None:
