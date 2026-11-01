@@ -754,7 +754,11 @@ def _merged_into(
 
 
 def all_branches_status(
-    repo: Repo, remotes: RemoteListing | None = None, *, include_all: bool = False
+    repo: Repo,
+    remotes: RemoteListing | None = None,
+    *,
+    include_all: bool = False,
+    include_behind: bool = False,
 ) -> dict[str, RepoStats]:
     """Return the upstream status of all branches in a repo.
 
@@ -766,9 +770,9 @@ def all_branches_status(
     A branch whose head is reachable from remote default branches (see
     `remote_default_branches`) carries a `merged_into` list naming them: its
     commits are safe there (see `branch_status`). The lists are computed when
-    any branch differs from its upstream at all (an issue, or commits ahead or
-    behind), whatever the report options, or for `include_all`; so whether a
-    reported branch gets one never depends on the other branches.
+    any branch will be reported (see `_branch_has_issue`, with
+    `include_behind`), or for `include_all`. A reported branch always triggers
+    that itself, so whether it gets a list never depends on the other branches.
     """
     branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
@@ -781,8 +785,7 @@ def all_branches_status(
     merged: dict[str, list[str]] = {}
     # skip the git calls when no branch can use the answer
     if include_all or any(
-        st["upstream"] != "set" or st.get("ahead") or st.get("behind")
-        for st in states.values()
+        _branch_has_issue(st, include_behind=include_behind) for st in states.values()
     ):
         merged = _merged_into(repo, remotes, defaults)
     result: dict[str, RepoStats] = {}
@@ -861,7 +864,12 @@ def repo_issues_in_branches(
     repo: Repo, options: ScanOptions, remotes: RemoteListing | None = None
 ) -> RepoStats:
     """Return per-branch upstream issues, keyed under `branches`."""
-    branches_st = all_branches_status(repo, remotes, include_all=options.include_all)
+    branches_st = all_branches_status(
+        repo,
+        remotes,
+        include_all=options.include_all,
+        include_behind=options.include_behind,
+    )
     branches: RepoStats = {}
     for name, status in branches_st.items():
         if not options.include_all and not _branch_has_issue(
