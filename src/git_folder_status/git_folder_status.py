@@ -108,28 +108,79 @@ class RepoIdentity:
 DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
 
 
-def remote_default_branches(repo: Repo) -> dict[str, frozenset[str]]:
+@dataclass(frozen=True)
+class _RemoteBranch:
+    """A branch on a configured remote, as its local remote-tracking ref holds it.
+
+    The one place that spells a remote-tracking ref: remote names are assumed
+    to contain no `/` (see CLAUDE.md), so the remote is the first path part.
+    """
+
+    remote: str
+    branch: str
+
+    @property
+    def name(self) -> str:
+        """The short name, as git shows it: `origin/feature`."""
+        return f"{self.remote}/{self.branch}"
+
+    @property
+    def path(self) -> str:
+        """The full ref: `refs/remotes/origin/feature`."""
+        return f"refs/remotes/{self.name}"
+
+    @classmethod
+    def from_path(cls, remote: str, path: str) -> "_RemoteBranch | None":
+        """Return the branch `path` names on `remote`, or `None` if not its ref."""
+        prefix = f"refs/remotes/{remote}/"
+        if not path.startswith(prefix):
+            return None
+        return cls(remote, path.removeprefix(prefix))
+
+
+def remote_branch_names(repo: Repo) -> dict[str, frozenset[str]]:
+    """Map each configured remote to the branch names its local refs hold.
+
+    Read once per repo from `refs/remotes/<remote>/`, in Python with no git
+    call. The remote's `HEAD`, an alias of one of its branches, is left out.
+    Only configured remotes are listed, not refs a removed remote left.
+    """
+    names: dict[str, frozenset[str]] = {}
+    for remote in repo.remotes:
+        found = (_RemoteBranch.from_path(remote.name, ref.path) for ref in remote.refs)
+        names[remote.name] = frozenset(
+            ref.branch for ref in found if ref is not None and ref.branch != "HEAD"
+        )
+    return names
+
+
+def remote_default_branches(
+    repo: Repo, branch_names: dict[str, frozenset[str]] | None = None
+) -> dict[str, frozenset[str]]:
     """Map each configured remote to the names of its default branches.
 
     A remote's default branch is what `refs/remotes/<remote>/HEAD` points to.
     That ref is set when cloning or by `git remote set-head`, and goes stale if
     the remote's default changes later, so `main` and `master` also count when
-    the remote has them. Reads refs only, with no git call.
+    the remote has them. `branch_names` is `remote_branch_names(repo)`, read
+    here when not given. Reads refs only, with no git call.
     """
+    if branch_names is None:
+        branch_names = remote_branch_names(repo)
     defaults: dict[str, frozenset[str]] = {}
-    for remote in repo.remotes:
-        prefix = f"refs/remotes/{remote.name}/"
-        names = {ref.path.removeprefix(prefix) for ref in remote.refs}
+    for remote, names in branch_names.items():
         found = set(DEFAULT_BRANCH_NAMES & names)
         try:
             # `.reference` reads where the symbolic ref points, without
             # resolving the commit (which would start a `git cat-file`)
-            target = SymbolicReference(repo, f"{prefix}HEAD").reference.path
+            head = _RemoteBranch(remote, "HEAD").path
+            target = SymbolicReference(repo, head).reference.path
         except (TypeError, ValueError):  # no HEAD ref, or not a symbolic one
             target = ""
-        if target.startswith(prefix) and target.removeprefix(prefix) in names:
-            found.add(target.removeprefix(prefix))
-        defaults[remote.name] = frozenset(found)
+        default = _RemoteBranch.from_path(remote, target)
+        if default is not None and default.branch in names:
+            found.add(default.branch)
+        defaults[remote] = frozenset(found)
     return defaults
 
 
@@ -508,9 +559,9 @@ def branch_status(
       Its ahead/behind counts are measured against that name-matched
       *candidate*, so they are only a guess.
     - `gone`: an upstream is configured but its remote ref no longer exists.
-    - `default`: a branch tracks its remote's default branch, without being
-      named like it or main/master itself (typically created with
-      `git switch -c feature origin/main`).
+    - `default`: a branch tracks its remote's default branch under another
+      name (typically created with `git switch -c feature origin/main`); a
+      local `main` tracking a remote whose default is `minimax-m3` counts too.
       Its ahead/behind counts would only measure drift from the default
       branch, not unpushed work, so they are not computed.
     - `missing`: local-only, no upstream and no matching remote branch.
@@ -554,10 +605,7 @@ def _branch_status(
     remote_defaults = (
         DEFAULT_BRANCH_NAMES if defaults is None else defaults.get(branch.remote, ())
     )
-    if branch.remote_head in remote_defaults and branch.name not in {
-        branch.remote_head,
-        *DEFAULT_BRANCH_NAMES,
-    }:
+    if branch.remote_head in remote_defaults and branch.name != branch.remote_head:
         return {"upstream": "default", "remote_branch": remote_branch, "head": head}
     ahead, behind = _parse_track(branch.track)
     return {
@@ -615,12 +663,12 @@ def _contained_in_default(
         for name in sorted(names):
             if remotes is not None and remotes.ref_state(remote, name) != "ok":
                 continue
-            ref = f"{remote}/{name}"
+            ref = _RemoteBranch(remote, name)
             out = repo.git.for_each_ref(
-                "--merged", f"refs/remotes/{ref}", "--format=%(refname)", "refs/heads"
+                "--merged", ref.path, "--format=%(refname)", "refs/heads"
             )
             for refname in out.splitlines():
-                contained.setdefault(refname.removeprefix("refs/heads/"), ref)
+                contained.setdefault(refname.removeprefix("refs/heads/"), ref.name)
     return contained
 
 

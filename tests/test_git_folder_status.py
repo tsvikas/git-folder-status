@@ -640,14 +640,18 @@ class TestBranchStatus:
             "head": "abc123",
         }
 
-    @pytest.mark.parametrize("name", ["main", "master"])
-    def test_default_branch_tracking_default_branch(self, name: str) -> None:
-        """`main`/`master` tracking a remote main/master is a normal upstream."""
+    @pytest.mark.parametrize(
+        ("name", "expected"), [("master", "set"), ("main", "default")]
+    )
+    def test_default_branch_tracking_default_branch(
+        self, name: str, expected: str
+    ) -> None:
+        """Tracking a remote default branch is normal only under the same name."""
         mock_repo = self._repo_with_remote_refs([])
         branch = BranchRef(name, "abc123", "origin/master", "origin", "master")
 
         result = branch_status(mock_repo, branch)
-        assert result["upstream"] == "set"
+        assert result["upstream"] == expected
 
     def test_feature_branch_tracking_default_branch_real_repo(
         self, tmp_path: Path
@@ -1094,6 +1098,17 @@ class TestRemoteDefaultBranches:
         # named like the default branch it tracks: a normal upstream
         assert statuses["develop"]["upstream"] == "set"
 
+    def test_local_main_tracking_other_default_is_default_state(
+        self, tmp_path: Path
+    ) -> None:
+        """A local `main` tracking a remote whose default is `develop` is flagged."""
+        with self._clone_with_develop(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "develop")
+            repo.git.branch("--set-upstream-to", "origin/develop", "main")
+            statuses = all_branches_status(repo)
+
+        assert statuses["main"]["upstream"] == "default"
+
     def test_contained_in_head_target(self, tmp_path: Path) -> None:
         """A branch merged only into a non-main HEAD target is contained in it."""
         with self._clone_with_develop(tmp_path) as repo:
@@ -1106,6 +1121,7 @@ class TestRemoteDefaultBranches:
             status = all_branches_status(repo)["scratch"]
 
         assert status["contained_in"] == "origin/develop"
+
 
 class TestDetachedHeadContainedIn:
     """Test the `detached_head_contained_in` qualifier on a detached HEAD."""
