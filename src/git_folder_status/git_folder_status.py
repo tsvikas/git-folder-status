@@ -13,7 +13,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from git import Git, GitCommandError, InvalidGitRepositoryError, Repo, Submodule
+from git import (
+    Git,
+    GitCommandError,
+    InvalidGitRepositoryError,
+    Repo,
+    Submodule,
+    SymbolicReference,
+)
 from git.refs.remote import RemoteReference
 
 IGNORED_FILENAMES = [".DS_Store"]
@@ -99,6 +106,31 @@ class RepoIdentity:
 
 
 DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
+
+
+def remote_default_branches(repo: Repo) -> dict[str, frozenset[str]]:
+    """Map each configured remote to the names of its default branches.
+
+    A remote's default branch is what `refs/remotes/<remote>/HEAD` points to.
+    That ref is set when cloning or by `git remote set-head`, and goes stale if
+    the remote's default changes later, so `main` and `master` also count when
+    the remote has them. Reads refs only, with no git call.
+    """
+    defaults: dict[str, frozenset[str]] = {}
+    for remote in repo.remotes:
+        prefix = f"refs/remotes/{remote.name}/"
+        names = {ref.path.removeprefix(prefix) for ref in remote.refs}
+        found = set(DEFAULT_BRANCH_NAMES & names)
+        try:
+            # `.reference` reads where the symbolic ref points, without
+            # resolving the commit (which would start a `git cat-file`)
+            target = SymbolicReference(repo, f"{prefix}HEAD").reference.path
+        except (TypeError, ValueError):  # no HEAD ref, or not a symbolic one
+            target = ""
+        if target.startswith(prefix) and target.removeprefix(prefix) in names:
+            found.add(target.removeprefix(prefix))
+        defaults[remote.name] = frozenset(found)
+    return defaults
 
 
 @dataclass(frozen=True)
@@ -456,10 +488,15 @@ _LOST_STATES = frozenset({"gone", "unreachable"})
 
 
 def branch_status(
-    repo: Repo, branch: BranchRef, remotes: RemoteListing | None = None
+    repo: Repo,
+    branch: BranchRef,
+    remotes: RemoteListing | None = None,
+    defaults: dict[str, frozenset[str]] | None = None,
 ) -> RepoStats:
     """Return the upstream relationship of a single branch.
 
+    `defaults` maps each remote to its default branch names, as
+    `remote_default_branches` reads them; without it, main/master count.
     A branch in a `_LOST_STATES` state carries a `still_on` list when other
     remotes hold a branch of the same name: a hint that its work may be safe.
 
@@ -471,8 +508,9 @@ def branch_status(
       Its ahead/behind counts are measured against that name-matched
       *candidate*, so they are only a guess.
     - `gone`: an upstream is configured but its remote ref no longer exists.
-    - `default`: a branch not itself named main/master tracks a remote
-      main/master (typically created with `git switch -c feature origin/main`).
+    - `default`: a branch tracks its remote's default branch, without being
+      named like it or main/master itself (typically created with
+      `git switch -c feature origin/main`).
       Its ahead/behind counts would only measure drift from the default
       branch, not unpushed work, so they are not computed.
     - `missing`: local-only, no upstream and no matching remote branch.
@@ -485,7 +523,7 @@ def branch_status(
     with it, a ref the remote no longer holds counts as `gone`. A name-matched
     candidate is checked the same way, as if it were the upstream.
     """
-    status = _branch_status(repo, branch, remotes)
+    status = _branch_status(repo, branch, remotes, defaults)
     if status["upstream"] in _LOST_STATES:
         lost = status["remote_branch"]
         assert isinstance(lost, str)  # noqa: S101
@@ -496,7 +534,10 @@ def branch_status(
 
 
 def _branch_status(
-    repo: Repo, branch: BranchRef, remotes: RemoteListing | None
+    repo: Repo,
+    branch: BranchRef,
+    remotes: RemoteListing | None,
+    defaults: dict[str, frozenset[str]] | None,
 ) -> RepoStats:
     """Return a branch's upstream state, without the `still_on` hint."""
     head = branch.head
@@ -510,10 +551,13 @@ def _branch_status(
         and (state := remotes.ref_state(branch.remote, branch.remote_head)) != "ok"
     ):
         return {"upstream": state, "remote_branch": remote_branch, "head": head}
-    if (
-        branch.remote_head in DEFAULT_BRANCH_NAMES
-        and branch.name not in DEFAULT_BRANCH_NAMES
-    ):
+    remote_defaults = (
+        DEFAULT_BRANCH_NAMES if defaults is None else defaults.get(branch.remote, ())
+    )
+    if branch.remote_head in remote_defaults and branch.name not in {
+        branch.remote_head,
+        *DEFAULT_BRANCH_NAMES,
+    }:
         return {"upstream": "default", "remote_branch": remote_branch, "head": head}
     ahead, behind = _parse_track(branch.track)
     return {
@@ -553,27 +597,30 @@ _CONTAINMENT_STATES = frozenset({"missing", "gone", "default", "unreachable"})
 
 
 def _contained_in_default(
-    repo: Repo, remotes: RemoteListing | None = None
+    repo: Repo,
+    remotes: RemoteListing | None,
+    defaults: dict[str, frozenset[str]],
 ) -> dict[str, str]:
-    """Map each local branch to a remote main/master that contains its head.
+    """Map each local branch to a remote default branch that contains its head.
 
-    Runs one `git for-each-ref --merged` per remote default branch, not one
-    query per local branch. The first containing ref wins. With a `remotes`
-    listing, a main/master the remote no longer holds (or an unreachable
-    remote's) does not count: being contained in it keeps nothing safe.
+    `defaults` holds each configured remote's default branch names. Runs one
+    `git for-each-ref --merged` per remote default branch, not one query per
+    local branch. The first containing ref wins, in remote order. With a
+    `remotes` listing, a default branch the remote no longer holds (or an
+    unreachable remote's) does not count: being contained in it keeps nothing
+    safe.
     """
     contained: dict[str, str] = {}
-    for remote in repo.remotes:
-        for ref in remote.refs:
-            if ref.remote_head not in DEFAULT_BRANCH_NAMES:
+    for remote, names in defaults.items():
+        for name in sorted(names):
+            if remotes is not None and remotes.ref_state(remote, name) != "ok":
                 continue
-            if remotes is not None and remotes.tracking_ref_state(ref) != "ok":
-                continue
+            ref = f"{remote}/{name}"
             out = repo.git.for_each_ref(
-                "--merged", ref.name, "--format=%(refname)", "refs/heads"
+                "--merged", f"refs/remotes/{ref}", "--format=%(refname)", "refs/heads"
             )
             for refname in out.splitlines():
-                contained.setdefault(refname.removeprefix("refs/heads/"), ref.name)
+                contained.setdefault(refname.removeprefix("refs/heads/"), ref)
     return contained
 
 
@@ -588,24 +635,26 @@ def all_branches_status(
     the repo being reported on, so it is redundant.
 
     A branch in a `_CONTAINMENT_STATES` state whose head is reachable from a
-    remote main/master carries a `contained_in` field naming that ref: it has
-    no commits of its own, so deleting it loses nothing.
+    remote default branch (see `remote_default_branches`) carries a
+    `contained_in` field naming that ref: it has no commits of its own, so
+    deleting it loses nothing.
     """
     branches = [b for b in list_branches(repo) if not b.name.startswith("gitbutler/")]
     if not branches:
         return {}
     common_dir = Path(repo.common_dir).resolve()
     own = Path(repo.working_dir).resolve()
+    defaults = remote_default_branches(repo)
     result: dict[str, RepoStats] = {}
     for branch in branches:
-        status = branch_status(repo, branch, remotes)
+        status = branch_status(repo, branch, remotes, defaults)
         worktree = _other_worktree(branch.worktree, common_dir=common_dir, own=own)
         if worktree is not None:
             status["worktree"] = worktree
         result[branch.name] = status
     # skip the git calls when no branch can use the answer
     if any(st["upstream"] in _CONTAINMENT_STATES for st in result.values()):
-        contained = _contained_in_default(repo, remotes)
+        contained = _contained_in_default(repo, remotes, defaults)
         for name, status in result.items():
             if status["upstream"] in _CONTAINMENT_STATES and name in contained:
                 status["contained_in"] = contained[name]

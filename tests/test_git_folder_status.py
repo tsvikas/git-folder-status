@@ -29,6 +29,7 @@ from git_folder_status.git_folder_status import (
     issues_for_one_folder,
     list_branches,
     list_remotes,
+    remote_default_branches,
     repo_issues_in_branches,
     repo_issues_in_stats,
     repo_issues_in_tags,
@@ -1049,6 +1050,63 @@ class TestRemoteListing:
         )
 
 
+class TestRemoteDefaultBranches:
+    """Test reading each remote's default branch from `<remote>/HEAD`."""
+
+    @staticmethod
+    def _clone_with_develop(tmp_path: Path) -> Repo:
+        """Clone a repo that has `main` and `develop`; `origin/HEAD` is `main`."""
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        source.git.branch("develop")
+        source.close()
+        return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+
+    def test_head_target_and_main_master(self, tmp_path: Path) -> None:
+        """A remote's HEAD target counts, and so do its main and master."""
+        with self._clone_with_develop(tmp_path) as repo:
+            assert remote_default_branches(repo) == {"origin": {"main"}}
+            repo.git.remote("set-head", "origin", "develop")
+            assert remote_default_branches(repo) == {"origin": {"main", "develop"}}
+
+    def test_without_head(self, tmp_path: Path) -> None:
+        """A remote with no HEAD ref falls back to main/master by name."""
+        with self._clone_with_develop(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "--delete")
+            assert remote_default_branches(repo) == {"origin": {"main"}}
+            with Repo(tmp_path / "source") as source:
+                source.git.switch("develop")
+                source.git.branch("-D", "main")
+            repo.git.fetch("--prune")
+            # git 2.48+ recreates a missing HEAD on fetch (followRemoteHEAD)
+            repo.git.update_ref("--no-deref", "-d", "refs/remotes/origin/HEAD")
+            assert remote_default_branches(repo) == {"origin": set()}
+
+    def test_tracking_head_target_is_default_state(self, tmp_path: Path) -> None:
+        """A feature branch tracking a non-main HEAD target tracks a default branch."""
+        with self._clone_with_develop(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "develop")
+            repo.git.branch("--track", "feature", "origin/develop")
+            repo.git.branch("--track", "develop", "origin/develop")
+            statuses = all_branches_status(repo)
+
+        assert statuses["feature"]["upstream"] == "default"
+        # named like the default branch it tracks: a normal upstream
+        assert statuses["develop"]["upstream"] == "set"
+
+    def test_contained_in_head_target(self, tmp_path: Path) -> None:
+        """A branch merged only into a non-main HEAD target is contained in it."""
+        with self._clone_with_develop(tmp_path) as repo:
+            repo.git.switch("-c", "scratch")  # no upstream
+            _commit_file(repo, "scratch.txt")
+            repo.git.push("origin", "scratch:develop")  # develop has it, main not
+            assert "contained_in" not in all_branches_status(repo)["scratch"]
+
+            repo.git.remote("set-head", "origin", "develop")
+            status = all_branches_status(repo)["scratch"]
+
+        assert status["contained_in"] == "origin/develop"
+
 class TestDetachedHeadContainedIn:
     """Test the `detached_head_contained_in` qualifier on a detached HEAD."""
 
@@ -1925,6 +1983,15 @@ def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
     parent.index.commit("add submodule", author=actor, committer=actor)
     assert parent.working_tree_dir is not None
     return Path(parent.working_tree_dir) / name
+
+
+def _commit_file(repo: Repo, filename: str) -> None:
+    """Write `filename` in `repo`'s work tree and commit it."""
+    assert repo.working_tree_dir is not None
+    (Path(repo.working_tree_dir) / filename).write_text("x")
+    repo.index.add([filename])
+    actor = Actor("Test", "test@example.com")
+    repo.index.commit(filename, author=actor, committer=actor)
 
 
 def _init_repo_with_commit(path: Path) -> Repo:
