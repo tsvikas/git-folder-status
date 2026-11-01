@@ -28,6 +28,7 @@ from git_folder_status.git_folder_status import (
     all_branches_status,
     branch_status,
     list_branches,
+    remote_default_branches,
     work_tree_status,
 )
 
@@ -377,6 +378,40 @@ def test_upstream_of_removed_remote_differs(tmp_path: Path) -> None:
         repo.git.config("--remove-section", "remote.origin")
         assert _scan_upstreams(repo)["main"]["upstream"] is None
         assert _gitpython_upstream(repo, "main")["upstream"] == "set"
+
+
+def _git_default_branches(repo: Repo) -> dict[str, set[str]]:
+    """Read each remote's default branches the clear way: ask git for its HEAD."""
+    defaults: dict[str, set[str]] = {}
+    for remote in repo.remotes:
+        prefix = f"refs/remotes/{remote.name}/"
+        names = set(
+            repo.git.for_each_ref("--format=%(refname)", prefix)
+            .replace(prefix, "")
+            .splitlines()
+        )
+        found = names & DEFAULT_BRANCH_NAMES
+        _status, target, _stderr = repo.git.execute(
+            ["git", "symbolic-ref", "--quiet", f"{prefix}HEAD"],
+            with_extended_output=True,
+            with_exceptions=False,
+        )
+        assert isinstance(target, str)
+        if target.removeprefix(prefix) in names:
+            found.add(target.removeprefix(prefix))
+        defaults[remote.name] = found
+    return defaults
+
+
+@pytest.mark.parametrize("head", ["main", "user/feat", "none"])
+def test_default_branches_match_symbolic_ref(tmp_path: Path, head: str) -> None:
+    """Reading `<remote>/HEAD` in Python finds what `git symbolic-ref` finds."""
+    with _clone_with_branches(tmp_path) as repo:
+        if head == "none":
+            repo.git.update_ref("--no-deref", "-d", "refs/remotes/origin/HEAD")
+        else:
+            repo.git.remote("set-head", "origin", head)
+        assert remote_default_branches(repo) == _git_default_branches(repo)
 
 
 def test_ahead_behind_matches_commit_counts(tmp_path: Path) -> None:

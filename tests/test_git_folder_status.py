@@ -29,6 +29,7 @@ from git_folder_status.git_folder_status import (
     issues_for_one_folder,
     list_branches,
     list_remotes,
+    remote_default_branches,
     repo_issues_in_branches,
     repo_issues_in_stats,
     repo_issues_in_tags,
@@ -639,14 +640,18 @@ class TestBranchStatus:
             "head": "abc123",
         }
 
-    @pytest.mark.parametrize("name", ["main", "master"])
-    def test_default_branch_tracking_default_branch(self, name: str) -> None:
-        """`main`/`master` tracking a remote main/master is a normal upstream."""
+    @pytest.mark.parametrize(
+        ("name", "expected"), [("master", "set"), ("main", "default")]
+    )
+    def test_default_branch_tracking_default_branch(
+        self, name: str, expected: str
+    ) -> None:
+        """Tracking a remote default branch is normal only under the same name."""
         mock_repo = self._repo_with_remote_refs([])
         branch = BranchRef(name, "abc123", "origin/master", "origin", "master")
 
         result = branch_status(mock_repo, branch)
-        assert result["upstream"] == "set"
+        assert result["upstream"] == expected
 
     def test_feature_branch_tracking_default_branch_real_repo(
         self, tmp_path: Path
@@ -1047,6 +1052,87 @@ class TestRemoteListing:
         assert list_remotes(mock_repo) == RemoteListing(
             refs={}, errors={"origin": str(GitCommandError(["git"], 1))}
         )
+
+
+class TestRemoteDefaultBranches:
+    """Test reading each remote's default branch from `<remote>/HEAD`."""
+
+    @staticmethod
+    def _clone_with_next(tmp_path: Path) -> Repo:
+        """Clone a repo that has `main` and `next`; `origin/HEAD` is `main`."""
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        source.git.branch("next")
+        source.close()
+        return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+
+    def test_head_target_and_main_master(self, tmp_path: Path) -> None:
+        """A remote's HEAD target counts, and so do its main and master."""
+        with self._clone_with_next(tmp_path) as repo:
+            assert remote_default_branches(repo) == {"origin": {"main"}}
+            repo.git.remote("set-head", "origin", "next")
+            assert remote_default_branches(repo) == {"origin": {"main", "next"}}
+
+    def test_without_head(self, tmp_path: Path) -> None:
+        """A remote with no HEAD ref falls back to main/master/develop by name."""
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "--delete")
+            assert remote_default_branches(repo) == {"origin": {"main"}}
+            with Repo(tmp_path / "source") as source:
+                source.git.switch("next")
+                source.git.branch("-D", "main")
+            repo.git.fetch("--prune")
+            # git 2.48+ recreates a missing HEAD on fetch (followRemoteHEAD)
+            repo.git.update_ref("--no-deref", "-d", "refs/remotes/origin/HEAD")
+            assert remote_default_branches(repo) == {"origin": set()}
+
+    def test_tracking_head_target_is_default_state(self, tmp_path: Path) -> None:
+        """A feature branch tracking a non-main HEAD target tracks a default branch."""
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "next")
+            repo.git.branch("--track", "feature", "origin/next")
+            repo.git.branch("--track", "next", "origin/next")
+            statuses = all_branches_status(repo)
+
+        assert statuses["feature"]["upstream"] == "default"
+        # named like the default branch it tracks: a normal upstream
+        assert statuses["next"]["upstream"] == "set"
+
+    def test_local_main_tracking_other_default_is_default_state(
+        self, tmp_path: Path
+    ) -> None:
+        """A local `main` tracking a remote whose default is `next` is flagged."""
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "next")
+            repo.git.branch("--set-upstream-to", "origin/next", "main")
+            statuses = all_branches_status(repo)
+
+        assert statuses["main"]["upstream"] == "default"
+
+    def test_contained_in_head_target(self, tmp_path: Path) -> None:
+        """A branch merged only into a non-main HEAD target is contained in it."""
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.switch("-c", "scratch")  # no upstream
+            _commit_file(repo, "scratch.txt")
+            repo.git.push("origin", "scratch:next")  # next has it, main not
+            assert "contained_in" not in all_branches_status(repo)["scratch"]
+
+            repo.git.remote("set-head", "origin", "next")
+            status = all_branches_status(repo)["scratch"]
+
+        assert status["contained_in"] == "origin/next"
+
+    def test_develop_counts_by_name(self, tmp_path: Path) -> None:
+        """Gitflow: `develop` is a default branch even when HEAD points to main."""
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.switch("-c", "scratch")  # no upstream
+            _commit_file(repo, "scratch.txt")
+            repo.git.push("origin", "scratch:develop")  # develop has it, main not
+            repo.git.fetch()
+            assert remote_default_branches(repo) == {"origin": {"main", "develop"}}
+            status = all_branches_status(repo)["scratch"]
+
+        assert status["contained_in"] == "origin/develop"
 
 
 class TestDetachedHeadContainedIn:
@@ -1925,6 +2011,15 @@ def _add_submodule(parent: Repo, source: Path, name: str) -> Path:
     parent.index.commit("add submodule", author=actor, committer=actor)
     assert parent.working_tree_dir is not None
     return Path(parent.working_tree_dir) / name
+
+
+def _commit_file(repo: Repo, filename: str) -> None:
+    """Write `filename` in `repo`'s work tree and commit it."""
+    assert repo.working_tree_dir is not None
+    (Path(repo.working_tree_dir) / filename).write_text("x")
+    repo.index.add([filename])
+    actor = Actor("Test", "test@example.com")
+    repo.index.commit(filename, author=actor, committer=actor)
 
 
 def _init_repo_with_commit(path: Path) -> Repo:
