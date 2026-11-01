@@ -1058,28 +1058,28 @@ class TestRemoteDefaultBranches:
     """Test reading each remote's default branch from `<remote>/HEAD`."""
 
     @staticmethod
-    def _clone_with_develop(tmp_path: Path) -> Repo:
-        """Clone a repo that has `main` and `develop`; `origin/HEAD` is `main`."""
+    def _clone_with_next(tmp_path: Path) -> Repo:
+        """Clone a repo that has `main` and `next`; `origin/HEAD` is `main`."""
         source = _init_repo_with_commit(tmp_path / "source")
         source.git.branch("-M", "main")
-        source.git.branch("develop")
+        source.git.branch("next")
         source.close()
         return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
 
     def test_head_target_and_main_master(self, tmp_path: Path) -> None:
         """A remote's HEAD target counts, and so do its main and master."""
-        with self._clone_with_develop(tmp_path) as repo:
+        with self._clone_with_next(tmp_path) as repo:
             assert remote_default_branches(repo) == {"origin": {"main"}}
-            repo.git.remote("set-head", "origin", "develop")
-            assert remote_default_branches(repo) == {"origin": {"main", "develop"}}
+            repo.git.remote("set-head", "origin", "next")
+            assert remote_default_branches(repo) == {"origin": {"main", "next"}}
 
     def test_without_head(self, tmp_path: Path) -> None:
-        """A remote with no HEAD ref falls back to main/master by name."""
-        with self._clone_with_develop(tmp_path) as repo:
+        """A remote with no HEAD ref falls back to main/master/develop by name."""
+        with self._clone_with_next(tmp_path) as repo:
             repo.git.remote("set-head", "origin", "--delete")
             assert remote_default_branches(repo) == {"origin": {"main"}}
             with Repo(tmp_path / "source") as source:
-                source.git.switch("develop")
+                source.git.switch("next")
                 source.git.branch("-D", "main")
             repo.git.fetch("--prune")
             # git 2.48+ recreates a missing HEAD on fetch (followRemoteHEAD)
@@ -1088,36 +1088,48 @@ class TestRemoteDefaultBranches:
 
     def test_tracking_head_target_is_default_state(self, tmp_path: Path) -> None:
         """A feature branch tracking a non-main HEAD target tracks a default branch."""
-        with self._clone_with_develop(tmp_path) as repo:
-            repo.git.remote("set-head", "origin", "develop")
-            repo.git.branch("--track", "feature", "origin/develop")
-            repo.git.branch("--track", "develop", "origin/develop")
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "next")
+            repo.git.branch("--track", "feature", "origin/next")
+            repo.git.branch("--track", "next", "origin/next")
             statuses = all_branches_status(repo)
 
         assert statuses["feature"]["upstream"] == "default"
         # named like the default branch it tracks: a normal upstream
-        assert statuses["develop"]["upstream"] == "set"
+        assert statuses["next"]["upstream"] == "set"
 
     def test_local_main_tracking_other_default_is_default_state(
         self, tmp_path: Path
     ) -> None:
-        """A local `main` tracking a remote whose default is `develop` is flagged."""
-        with self._clone_with_develop(tmp_path) as repo:
-            repo.git.remote("set-head", "origin", "develop")
-            repo.git.branch("--set-upstream-to", "origin/develop", "main")
+        """A local `main` tracking a remote whose default is `next` is flagged."""
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.remote("set-head", "origin", "next")
+            repo.git.branch("--set-upstream-to", "origin/next", "main")
             statuses = all_branches_status(repo)
 
         assert statuses["main"]["upstream"] == "default"
 
     def test_contained_in_head_target(self, tmp_path: Path) -> None:
         """A branch merged only into a non-main HEAD target is contained in it."""
-        with self._clone_with_develop(tmp_path) as repo:
+        with self._clone_with_next(tmp_path) as repo:
+            repo.git.switch("-c", "scratch")  # no upstream
+            _commit_file(repo, "scratch.txt")
+            repo.git.push("origin", "scratch:next")  # next has it, main not
+            assert "contained_in" not in all_branches_status(repo)["scratch"]
+
+            repo.git.remote("set-head", "origin", "next")
+            status = all_branches_status(repo)["scratch"]
+
+        assert status["contained_in"] == "origin/next"
+
+    def test_develop_counts_by_name(self, tmp_path: Path) -> None:
+        """Gitflow: `develop` is a default branch even when HEAD points to main."""
+        with self._clone_with_next(tmp_path) as repo:
             repo.git.switch("-c", "scratch")  # no upstream
             _commit_file(repo, "scratch.txt")
             repo.git.push("origin", "scratch:develop")  # develop has it, main not
-            assert "contained_in" not in all_branches_status(repo)["scratch"]
-
-            repo.git.remote("set-head", "origin", "develop")
+            repo.git.fetch()
+            assert remote_default_branches(repo) == {"origin": {"main", "develop"}}
             status = all_branches_status(repo)["scratch"]
 
         assert status["contained_in"] == "origin/develop"

@@ -105,7 +105,9 @@ class RepoIdentity:
         return self.common_dir != self.git_dir
 
 
-DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
+# branch names that count as a remote's default (integration) branch even
+# without its `<remote>/HEAD` pointing there; `develop` covers gitflow repos
+DEFAULT_BRANCH_NAMES = frozenset({"main", "master", "develop"})
 
 
 @dataclass(frozen=True)
