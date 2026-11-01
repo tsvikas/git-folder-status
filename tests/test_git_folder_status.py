@@ -110,7 +110,7 @@ class TestFilterSubmoduleIssues:
         """Test that branches only behind remote are filtered out."""
         issues: RepoStats = {
             "branches": {
-                "main": {"behind": 5},
+                "main": {"upstream": {"name": "origin/main", "behind": 5}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -121,7 +121,7 @@ class TestFilterSubmoduleIssues:
         """Test that branches with commits ahead are kept."""
         issues: RepoStats = {
             "branches": {
-                "main": {"ahead": 2},
+                "main": {"upstream": {"name": "origin/main", "ahead": 2}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -134,7 +134,7 @@ class TestFilterSubmoduleIssues:
         """Test that branches both ahead and behind are kept."""
         issues: RepoStats = {
             "branches": {
-                "main": {"ahead": 2, "behind": 3},
+                "main": {"upstream": {"name": "origin/main", "ahead": 2, "behind": 3}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -147,9 +147,16 @@ class TestFilterSubmoduleIssues:
         """Test that an upstream problem is kept even with no ahead commits."""
         issues: RepoStats = {
             "branches": {
-                "local": {"no_remote": True},
-                "stale": {"remote_deleted": "origin/stale"},
-                "feature": {"tracks_default_branch": "origin/main"},
+                "local": {"upstream": {"issue": "not_set"}},
+                "stale": {
+                    "upstream": {
+                        "name": "origin/stale",
+                        "issue": "remote_branch_deleted",
+                    }
+                },
+                "feature": {
+                    "upstream": {"name": "origin/main", "issue": "is_default_branch"}
+                },
             },
         }
         result = _filter_submodule_issues(issues)
@@ -159,8 +166,8 @@ class TestFilterSubmoduleIssues:
         """Test filtering when some branches are ahead and some only behind."""
         issues: RepoStats = {
             "branches": {
-                "main": {"behind": 4},
-                "feature": {"ahead": 1},
+                "main": {"upstream": {"name": "origin/main", "behind": 4}},
+                "feature": {"upstream": {"name": "origin/feature", "ahead": 1}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -177,7 +184,7 @@ class TestFilterSubmoduleIssues:
             "untracked_files": ["file.txt"],
             "stash_count": 2,
             "branches": {
-                "main": {"behind": 4},
+                "main": {"upstream": {"name": "origin/main", "behind": 4}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -549,7 +556,7 @@ class TestBranchStatus:
         mock_repo = self._repo_with_remote_refs([])
 
         result = branch_status(mock_repo, BranchRef("feature", "abc123"))
-        assert result == {"upstream": "missing", "head": "abc123"}
+        assert result == {"upstream": "not_set", "head": "abc123"}
 
     def test_no_tracking_branch_with_matching_remote(self) -> None:
         """Test branch pushed without `-u`: remote exists, no upstream set."""
@@ -558,11 +565,9 @@ class TestBranchStatus:
 
         result = branch_status(mock_repo, BranchRef("feature", "abc123"))
         assert result == {
-            "upstream": "unset",
-            "remote_branch": "origin/user/feature",
-            "ahead": 2,
-            "behind": 1,
+            "upstream": "not_set",
             "head": "abc123",
+            "candidates": [{"name": "origin/user/feature", "ahead": 2, "behind": 1}],
         }
         mock_repo.git.rev_list.assert_called_once_with(
             "--left-right",
@@ -571,20 +576,23 @@ class TestBranchStatus:
         )
 
     def test_matching_remote_prefers_exact_name(self) -> None:
-        """Test that `origin/feature` is preferred over prefixed variants."""
+        """Test that `origin/feature` comes before prefixed variants."""
         mock_repo = self._repo_with_remote_refs(
             ["origin/user/feature", "origin/feature"]
         )
 
         result = branch_status(mock_repo, BranchRef("feature", "abc123"))
-        assert result["remote_branch"] == "origin/feature"
+        assert result["candidates"] == [
+            {"name": "origin/feature"},
+            {"name": "origin/user/feature"},
+        ]
 
     def test_matching_remote_requires_full_name_component(self) -> None:
         """Test that `origin/other-feature` does not match a local `feature`."""
         mock_repo = self._repo_with_remote_refs(["origin/other-feature"])
 
         result = branch_status(mock_repo, BranchRef("feature", "abc123"))
-        assert result == {"upstream": "missing", "head": "abc123"}
+        assert result == {"upstream": "not_set", "head": "abc123"}
 
     def test_missing_remote_branch(self) -> None:
         """Test branch tracking a missing remote branch."""
@@ -699,16 +707,27 @@ class TestListBranches:
         assert branches == {
             "old": BranchRef("old", head, "origin/old", "origin", "old", "gone"),
             "plain": BranchRef("plain", head),
-            "on-local": BranchRef("on-local", head),
+            "on-local": BranchRef("on-local", head, local_upstream="plain"),
         }
+
+    def test_upstream_on_unconfigured_remote(self, tmp_path: Path) -> None:
+        """An upstream whose remote was removed from the config is still named."""
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        source.close()
+        with Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone") as repo:
+            repo.git.config("--remove-section", "remote.origin")
+            (main,) = list_branches(repo)
+
+        assert (main.upstream, main.unresolved_upstream) == ("", "origin/main")
 
     def test_empty_repo(self, tmp_path: Path) -> None:
         """A repo with no commits has no branches."""
         assert list_branches(Repo.init(tmp_path)) == []
 
 
-class TestContainedInDefault:
-    """Test the `contained_in` qualifier on branches with no unique commits."""
+class TestMergedInto:
+    """Test the `merged_into` qualifier on branches whose commits are on main."""
 
     @staticmethod
     def _clone(tmp_path: Path) -> Repo:
@@ -724,8 +743,8 @@ class TestContainedInDefault:
         actor = Actor("Test", "test@example.com")
         repo.index.commit(filename, author=actor, committer=actor)
 
-    def test_marks_branches_without_unique_commits(self, tmp_path: Path) -> None:
-        """Each upstream problem state gains `contained_in` only when it applies."""
+    def test_marks_merged_branches(self, tmp_path: Path) -> None:
+        """Each branch whose commit is on a remote main gets `merged_into`."""
         repo = self._clone(tmp_path)
         repo.git.branch("scratch")
         repo.git.branch("--track", "empty-feature", "origin/main")
@@ -741,41 +760,151 @@ class TestContainedInDefault:
 
         assert result["branches"] == {
             "empty-feature": {
-                "tracks_default_branch": "origin/main",
-                "contained_in": "origin/main",
+                "upstream": {"name": "origin/main", "issue": "is_default_branch"},
+                "merged_into": ["origin/main"],
             },
-            "old": {"remote_deleted": "origin/old", "contained_in": "origin/main"},
-            "scratch": {"no_remote": True, "contained_in": "origin/main"},
-            "wip": {"no_remote": True},
+            "old": {
+                "upstream": {"name": "origin/old", "issue": "remote_branch_deleted"},
+                "merged_into": ["origin/main"],
+            },
+            "scratch": {
+                "upstream": {"issue": "not_set"},
+                "merged_into": ["origin/main"],
+            },
+            "wip": {"upstream": {"issue": "not_set"}},
         }
 
-    def test_older_commit_on_main_is_contained(self, tmp_path: Path) -> None:
-        """A branch left behind after main moved on is still contained."""
+    def test_older_commit_on_main_is_merged(self, tmp_path: Path) -> None:
+        """A branch left behind after main moved on is still merged."""
         repo = self._clone(tmp_path)
         repo.git.branch("stale")
         self._commit(Repo(tmp_path / "source"), "more.txt")
         repo.git.fetch()
 
         status = all_branches_status(repo)["stale"]
-        assert status["contained_in"] == "origin/main"
+        assert status["merged_into"] == ["origin/main"]
 
-    def test_tracked_in_sync_branch_not_annotated(self, tmp_path: Path) -> None:
-        """A branch with a real upstream never gets `contained_in`."""
+    def test_own_usable_upstream_not_listed(self, tmp_path: Path) -> None:
+        """A branch's own usable upstream is not listed: its counts say it."""
         repo = self._clone(tmp_path)
 
-        status = all_branches_status(repo)["main"]
-        assert "contained_in" not in status
+        status = all_branches_status(repo, include_all=True)["main"]
+        assert "merged_into" not in status
 
-    def test_submodule_drops_contained_branches(self) -> None:
-        """In a submodule a contained branch has no work at risk, so it is hidden."""
+    def test_every_remote_listed(self, tmp_path: Path) -> None:
+        """A branch merged on two remotes names both, in remote order."""
+        repo = self._clone(tmp_path)
+        Repo.init(tmp_path / "fork", bare=True).close()
+        repo.create_remote("fork", str(tmp_path / "fork"))
+        repo.git.push("fork", "main")
+        repo.git.fetch("fork")
+        repo.git.branch("scratch")
+
+        status = all_branches_status(repo)["scratch"]
+        assert status["merged_into"] == ["origin/main", "fork/main"]
+
+    def test_submodule_drops_merged_branches(self) -> None:
+        """In a submodule a merged branch has no work at risk, so it is hidden."""
         issues: RepoStats = {
             "branches": {
-                "scratch": {"no_remote": True, "contained_in": "origin/main"},
-                "wip": {"no_remote": True},
+                "scratch": {
+                    "upstream": {"issue": "not_set"},
+                    "merged_into": ["origin/main"],
+                },
+                "wip": {"upstream": {"issue": "not_set"}},
             },
         }
         result = _filter_submodule_issues(issues)
-        assert result["branches"] == {"wip": {"no_remote": True}}
+        assert result["branches"] == {"wip": {"upstream": {"issue": "not_set"}}}
+
+
+class TestUpstreamIssues:
+    """Test the upstream issues and remote candidates, on real repos."""
+
+    @staticmethod
+    def _clone(tmp_path: Path) -> Repo:
+        source = _init_repo_with_commit(tmp_path / "source")
+        source.git.branch("-M", "main")
+        source.close()
+        return Repo.clone_from(str(tmp_path / "source"), tmp_path / "clone")
+
+    @staticmethod
+    def _add_remote(repo: Repo, tmp_path: Path, name: str) -> None:
+        Repo.init(tmp_path / name, bare=True).close()
+        repo.create_remote(name, str(tmp_path / name))
+
+    def _branches(self, repo: Repo) -> RepoStats:
+        branches = repo_issues_in_branches(repo, ScanOptions()).get("branches", {})
+        assert isinstance(branches, dict)
+        return branches
+
+    def test_upstream_is_local_branch(self, tmp_path: Path) -> None:
+        """A branch tracking a local branch is named, with its remote candidates."""
+        with self._clone(tmp_path) as repo:
+            repo.git.switch("-c", "feat", "--track", "main")
+            _commit_file(repo, "feat.txt")
+            repo.git.push("origin", "feat")  # same name on origin, not tracked
+            repo.git.switch("main")
+            branches = self._branches(repo)
+
+        assert branches["feat"] == {
+            "upstream": {"name": "main", "issue": "is_local_branch"},
+            "remote_candidates": [{"name": "origin/feat"}],
+        }
+
+    def test_upstream_remote_not_configured(self, tmp_path: Path) -> None:
+        """An upstream whose remote is gone is named; its leftover refs are not used.
+
+        The removed remote's refs stay behind under `refs/remotes/origin/`, but
+        only configured remotes are searched for candidates.
+        """
+        with self._clone(tmp_path) as repo:
+            self._add_remote(repo, tmp_path, "company")
+            repo.git.push("company", "main")
+            repo.git.config("--remove-section", "remote.origin")
+            assert repo.git.for_each_ref("refs/remotes/origin")  # still there
+            branches = self._branches(repo)
+
+        assert branches["main"] == {
+            "upstream": {"name": "origin/main", "issue": "remote_not_configured"},
+            "remote_candidates": [{"name": "company/main"}],
+        }
+
+    def test_tracking_default_branch_gets_candidates(self, tmp_path: Path) -> None:
+        """A branch made from origin/main, pushed without -u, shows its pushed copy."""
+        with self._clone(tmp_path) as repo:
+            repo.git.switch("-c", "fix", "--track", "origin/main")
+            _commit_file(repo, "fix.txt")
+            repo.git.push("origin", "fix")  # upstream stays origin/main
+            _commit_file(repo, "more.txt")
+            repo.git.switch("main")
+            branches = self._branches(repo)
+
+        assert branches["fix"] == {
+            "upstream": {"name": "origin/main", "issue": "is_default_branch"},
+            "remote_candidates": [{"name": "origin/fix", "ahead": 1}],
+        }
+
+    def test_candidates_closest_first(self, tmp_path: Path) -> None:
+        """Past the push remote, the candidate holding most of the work comes first."""
+        with self._clone(tmp_path) as repo:
+            for name in ("fork", "backup"):
+                self._add_remote(repo, tmp_path, name)
+            repo.git.switch("-c", "wip")
+            _commit_file(repo, "one.txt")
+            repo.git.push("fork", "wip")  # fork has 1 of 2 commits
+            _commit_file(repo, "two.txt")
+            repo.git.push("backup", "wip")  # backup has both
+            repo.git.switch("main")
+            branches = self._branches(repo)
+
+        assert branches["wip"] == {
+            "upstream": {"issue": "not_set"},
+            "remote_candidates": [
+                {"name": "backup/wip"},
+                {"name": "fork/wip", "ahead": 1},
+            ],
+        }
 
 
 class TestRemoteListing:
@@ -827,10 +956,10 @@ class TestRemoteListing:
         result = repo_issues_in_branches(repo, ScanOptions(slow=True), remotes)
         assert result["branches"] == {
             "pushed": {
-                "remote_unreachable": "dead/pushed",
-                "contained_in": "origin/main",
+                "upstream": {"name": "dead/pushed", "issue": "remote_unreachable"},
+                "merged_into": ["origin/main"],
             },
-            "work": {"remote_unreachable": "dead/work"},
+            "work": {"upstream": {"name": "dead/work", "issue": "remote_unreachable"}},
         }
 
     def test_dead_remote_keeps_rest_of_report(self, tmp_path: Path) -> None:
@@ -851,6 +980,19 @@ class TestRemoteListing:
         assert isinstance(branches, dict)
         assert set(branches) == {"pushed", "work"}
 
+    def test_remote_name_with_slash_reported(self, tmp_path: Path) -> None:
+        """A remote named with `/` is unsupported, so the report names it."""
+        repo = self._clone(tmp_path)
+        repo.git.remote("rename", "origin", "team/fork")
+
+        result, _ = issues_for_one_folder(tmp_path / "clone", ScanOptions())
+
+        assert result["unsupported_remote_names"] == ["team/fork"]
+        assert (
+            "unsupported_remote_names"
+            not in issues_for_one_folder(tmp_path / "source", ScanOptions())[0]
+        )
+
     def test_dead_remote_main_does_not_contain(self, tmp_path: Path) -> None:
         """Being contained in an unreachable remote's main keeps nothing safe."""
         repo = self._clone(tmp_path)
@@ -864,14 +1006,14 @@ class TestRemoteListing:
         repo.git.remote("set-url", "dead", str(tmp_path / "deleted"))
 
         status = all_branches_status(repo, list_remotes(repo))["scratch"]
-        assert status == {"upstream": "missing", "head": status["head"]}
-        assert "contained_in" in all_branches_status(repo)["scratch"]
+        assert status == {"upstream": "not_set", "head": status["head"]}
+        assert "merged_into" in all_branches_status(repo)["scratch"]
 
     def test_stale_ref_on_live_remote_is_gone(self, tmp_path: Path) -> None:
         """A remote branch deleted but not yet pruned locally is `gone`.
 
-        That holds for a name-matched candidate too: it is reported as deleted,
-        not as if it never existed.
+        A name-matched candidate deleted that way holds nothing, so it is left
+        out of the candidates.
         """
         repo = self._clone(tmp_path)
         repo.git.push("origin", "main:feature")
@@ -883,21 +1025,29 @@ class TestRemoteListing:
         Repo(tmp_path / "source").git.branch("-D", "feature", "wip")
 
         assert repo_issues_in_branches(repo, ScanOptions()) == {
-            "branches": {"wip": {"remote_not_tracked": {"candidate": "origin/wip"}}}
+            "branches": {
+                "wip": {
+                    "upstream": {"issue": "not_set"},
+                    "remote_candidates": [{"name": "origin/wip"}],
+                }
+            }
         }
         result = repo_issues_in_branches(
             repo, ScanOptions(slow=True), list_remotes(repo)
         )
         assert result["branches"] == {
             "feature": {
-                "remote_deleted": "origin/feature",
-                "contained_in": "origin/main",
+                "upstream": {
+                    "name": "origin/feature",
+                    "issue": "remote_branch_deleted",
+                },
+                "merged_into": ["origin/main"],
             },
-            "wip": {"remote_deleted": "origin/wip"},
+            "wip": {"upstream": {"issue": "not_set"}},
         }
 
     def test_untracked_branch_on_dead_remote(self, tmp_path: Path) -> None:
-        """A name-matched candidate on a dead remote is flagged as unreachable."""
+        """A name-matched candidate on a dead remote is kept, as unreachable."""
         repo = self._clone(tmp_path)
         Repo.init(tmp_path / "dead", bare=True)
         repo.create_remote("dead", str(tmp_path / "dead"))
@@ -910,7 +1060,14 @@ class TestRemoteListing:
         result = repo_issues_in_branches(
             repo, ScanOptions(slow=True), list_remotes(repo)
         )
-        assert result["branches"] == {"wip": {"remote_unreachable": "dead/wip"}}
+        assert result["branches"] == {
+            "wip": {
+                "upstream": {"issue": "not_set"},
+                "remote_candidates": [
+                    {"name": "dead/wip", "issue": "remote_unreachable"}
+                ],
+            }
+        }
 
     def _clone_with_backup_remote(self, tmp_path: Path) -> Repo:
         """Clone, then push branch `wip` to both `origin` and a `backup` remote."""
@@ -924,7 +1081,7 @@ class TestRemoteListing:
         repo.git.switch("main")
         return repo
 
-    def test_lost_upstream_hints_other_remote(self, tmp_path: Path) -> None:
+    def test_lost_upstream_lists_other_remote(self, tmp_path: Path) -> None:
         """A deleted upstream is reported, with the remote that still has it."""
         repo = self._clone_with_backup_remote(tmp_path)
         repo.git.branch("--set-upstream-to", "origin/wip", "wip")
@@ -934,23 +1091,29 @@ class TestRemoteListing:
             repo, ScanOptions(slow=True), list_remotes(repo)
         )
         assert result["branches"] == {
-            "wip": {"remote_deleted": "origin/wip", "still_on": ["backup/wip"]}
+            "wip": {
+                "upstream": {"name": "origin/wip", "issue": "remote_branch_deleted"},
+                "remote_candidates": [{"name": "backup/wip"}],
+            }
         }
 
-    def test_pruned_upstream_hints_other_remote(self, tmp_path: Path) -> None:
-        """Without `--slow`, a pruned upstream is hinted from local refs."""
+    def test_pruned_upstream_lists_other_remote(self, tmp_path: Path) -> None:
+        """Without `--slow`, a pruned upstream gets candidates from local refs."""
         repo = self._clone_with_backup_remote(tmp_path)
         repo.git.branch("--set-upstream-to", "origin/wip", "wip")
         repo.git.push("origin", "--delete", "wip")
 
         assert repo_issues_in_branches(repo, ScanOptions())["branches"] == {
-            "wip": {"remote_deleted": "origin/wip", "still_on": ["backup/wip"]}
+            "wip": {
+                "upstream": {"name": "origin/wip", "issue": "remote_branch_deleted"},
+                "remote_candidates": [{"name": "backup/wip"}],
+            }
         }
 
-    def test_lost_candidate_not_replaced(self, tmp_path: Path) -> None:
-        """A dead preferred candidate is reported, not swapped for a live one."""
+    def test_unreachable_candidate_still_first(self, tmp_path: Path) -> None:
+        """An unreachable candidate on the push remote stays first, as unknown."""
         repo = self._clone_with_backup_remote(tmp_path)
-        # origin comes first in the config, so its `origin/wip` is preferred
+        # no push settings: `git push` would use origin
         repo.git.remote("set-url", "origin", str(tmp_path / "deleted"))
 
         result = repo_issues_in_branches(
@@ -959,8 +1122,11 @@ class TestRemoteListing:
         branches = result["branches"]
         assert isinstance(branches, dict)
         assert branches["wip"] == {
-            "remote_unreachable": "origin/wip",
-            "still_on": ["backup/wip"],
+            "upstream": {"issue": "not_set"},
+            "remote_candidates": [
+                {"name": "origin/wip", "issue": "remote_unreachable"},
+                {"name": "backup/wip"},
+            ],
         }
 
     @pytest.mark.parametrize(
@@ -978,7 +1144,7 @@ class TestRemoteListing:
     def test_candidate_on_push_remote_preferred(
         self, tmp_path: Path, config: dict[str, str], preferred: str
     ) -> None:
-        """The name-matched candidate is the one `git push` would update."""
+        """The first name-matched candidate is the one `git push` would update."""
         repo = self._clone_with_backup_remote(tmp_path)
         # list backup first, so config order alone would pick it
         repo.git.remote("rename", "origin", "tmp")
@@ -988,8 +1154,10 @@ class TestRemoteListing:
             repo.git.config(key, value)
 
         status = all_branches_status(repo)["wip"]
-        assert status["upstream"] == "unset"
-        assert status["remote_branch"] == preferred
+        assert status["upstream"] == "not_set"
+        candidates = status["candidates"]
+        assert isinstance(candidates, list)
+        assert candidates[0] == {"name": preferred}
 
     def test_listing_shared_by_worktrees(self, tmp_path: Path) -> None:
         """The worktrees of one repo list its remotes only once per scan."""
@@ -1109,18 +1277,18 @@ class TestRemoteDefaultBranches:
 
         assert statuses["main"]["upstream"] == "default"
 
-    def test_contained_in_head_target(self, tmp_path: Path) -> None:
+    def test_merged_into_head_target(self, tmp_path: Path) -> None:
         """A branch merged only into a non-main HEAD target is contained in it."""
         with self._clone_with_next(tmp_path) as repo:
             repo.git.switch("-c", "scratch")  # no upstream
             _commit_file(repo, "scratch.txt")
             repo.git.push("origin", "scratch:next")  # next has it, main not
-            assert "contained_in" not in all_branches_status(repo)["scratch"]
+            assert "merged_into" not in all_branches_status(repo)["scratch"]
 
             repo.git.remote("set-head", "origin", "next")
             status = all_branches_status(repo)["scratch"]
 
-        assert status["contained_in"] == "origin/next"
+        assert status["merged_into"] == ["origin/next"]
 
     def test_develop_counts_by_name(self, tmp_path: Path) -> None:
         """Gitflow: `develop` is a default branch even when HEAD points to main."""
@@ -1132,7 +1300,7 @@ class TestRemoteDefaultBranches:
             assert remote_default_branches(repo) == {"origin": {"main", "develop"}}
             status = all_branches_status(repo)["scratch"]
 
-        assert status["contained_in"] == "origin/develop"
+        assert status["merged_into"] == ["origin/develop"]
 
 
 class TestDetachedHeadContainedIn:
@@ -1194,66 +1362,135 @@ class TestDetachedHeadContainedIn:
 
 
 class TestRepoIssuesInBranches:
-    """Test repo_issues_in_branches function."""
+    """Test how repo_issues_in_branches shapes each branch's report record."""
 
-    def test_branches_local_only(self) -> None:
-        """Test detection of branches that exist only locally."""
-        mock_repo = Mock(spec=Repo)
-
+    @staticmethod
+    def _report(
+        statuses: dict[str, RepoStats], options: ScanOptions | None = None
+    ) -> RepoStats:
+        """Report `statuses`, as `all_branches_status` would return them."""
         with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
+            "git_folder_status.git_folder_status.all_branches_status",
+            return_value=statuses,
+        ):
+            return repo_issues_in_branches(Mock(spec=Repo), options or ScanOptions())
+
+    @pytest.mark.parametrize(
+        ("state", "issue"),
+        [
+            ("local", "is_local_branch"),
+            ("not_configured", "remote_not_configured"),
+            ("gone", "remote_branch_deleted"),
+            ("unreachable", "remote_unreachable"),
+            ("default", "is_default_branch"),
+        ],
+    )
+    def test_upstream_issue_named(self, state: str, issue: str) -> None:
+        """A configured upstream with an issue is reported by name and issue."""
+        result = self._report(
+            {"feature": {"upstream": state, "remote_branch": "origin/feature"}}
+        )
+        assert result["branches"] == {
+            "feature": {"upstream": {"name": "origin/feature", "issue": issue}}
+        }
+
+    def test_no_upstream(self) -> None:
+        """A branch with no upstream has an issue and no name."""
+        result = self._report({"wip": {"upstream": "not_set"}})
+        assert result["branches"] == {"wip": {"upstream": {"issue": "not_set"}}}
+
+    def test_candidates_reported_with_their_counts(self) -> None:
+        """Remote candidates keep their own counts, apart from the upstream's."""
+        candidates: list[RepoStats] = [
+            {"name": "origin/feature", "ahead": 2},
+            {"name": "fork/feature"},
+        ]
+        result = self._report(
+            {"feature": {"upstream": "not_set", "candidates": candidates}}
+        )
+        assert result["branches"] == {
+            "feature": {
+                "upstream": {"issue": "not_set"},
+                "remote_candidates": candidates,
+            }
+        }
+
+    def test_merged_into_qualifies_an_issue(self) -> None:
+        """`merged_into` is reported with the upstream issue it qualifies."""
+        result = self._report(
+            {
+                "old": {
+                    "upstream": "gone",
+                    "remote_branch": "origin/old",
+                    "merged_into": ["origin/main"],
+                }
+            }
+        )
+        assert result["branches"] == {
+            "old": {
+                "upstream": {"name": "origin/old", "issue": "remote_branch_deleted"},
+                "merged_into": ["origin/main"],
+            }
+        }
+
+    def test_merged_into_alone_reports_nothing(self) -> None:
+        """A clean, in-sync branch is not reported just because it is merged."""
+        result = self._report(
+            {
                 "main": {
                     "upstream": "set",
                     "remote_branch": "origin/main",
                     "ahead": 0,
                     "behind": 0,
-                },
-                "feature": {"upstream": "missing"},
+                    "merged_into": ["fork/main"],
+                }
             }
+        )
+        assert result == {}
 
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            assert result["branches"] == {"feature": {"no_remote": True}}
-
-    def test_branches_upstream_unset(self) -> None:
-        """Test that pushed-but-untracked branches get their own category."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
+    def test_include_behind_false_filters_behind_only(self) -> None:
+        """Branches only behind their upstream are left out by default."""
+        result = self._report(
+            {
+                "main": {
+                    "upstream": "set",
+                    "remote_branch": "origin/main",
+                    "ahead": 0,
+                    "behind": 5,
+                },
                 "feature": {
-                    "upstream": "unset",
-                    "remote_branch": "origin/user/feature",
-                    "behind": 0,
+                    "upstream": "set",
+                    "remote_branch": "origin/feature",
                     "ahead": 2,
+                    "behind": 0,
                 },
-                "local-only": {"upstream": "missing"},
             }
+        )
+        assert result["branches"] == {
+            "feature": {"upstream": {"name": "origin/feature", "ahead": 2}}
+        }
 
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            assert result["branches"] == {
-                "feature": {
-                    "remote_not_tracked": {
-                        "candidate": "origin/user/feature",
-                        "ahead": 2,
-                    },
+    def test_include_behind_true_includes_behind_only(self) -> None:
+        """With include_behind, branches only behind are reported too."""
+        result = self._report(
+            {
+                "main": {
+                    "upstream": "set",
+                    "remote_branch": "origin/main",
+                    "ahead": 0,
+                    "behind": 5,
                 },
-                "local-only": {"no_remote": True},
-            }
+            },
+            ScanOptions(include_behind=True),
+        )
+        assert result["branches"] == {
+            "main": {"upstream": {"name": "origin/main", "behind": 5}}
+        }
 
     def test_include_all_branches(self) -> None:
-        """Test include_all flag includes synced branches."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
+        """Under --all, a clean branch is listed with its upstream and head."""
+        result = self._report(
+            {
                 "main": {
                     "upstream": "set",
                     "remote_branch": "origin/main",
@@ -1261,160 +1498,19 @@ class TestRepoIssuesInBranches:
                     "behind": 0,
                     "head": "abc123",
                 },
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
-
-            assert result["branches"] == {
-                "main": {"remote_branch": "origin/main", "head": "abc123"},
-            }
-
-    def test_include_all_local_only_branch(self) -> None:
-        """A local-only branch under --all reports its head but no remote."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
-                "wip": {"upstream": "missing", "head": "abc123"},
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
-
-            assert result["branches"] == {
-                "wip": {"no_remote": True, "head": "abc123"},
-            }
-
-    def test_branches_upstream_gone(self) -> None:
-        """A configured upstream whose ref was deleted is reported as gone."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
-                "stale": {"upstream": "gone", "remote_branch": "origin/stale"},
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            assert result["branches"] == {
-                "stale": {"remote_deleted": "origin/stale"},
-            }
-
-    def test_branches_tracking_default_branch(self) -> None:
-        """A feature branch tracking main is reported without ahead/behind."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
-                "feature": {"upstream": "default", "remote_branch": "origin/main"},
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            assert result["branches"] == {
-                "feature": {"tracks_default_branch": "origin/main"},
-            }
-
-    def test_remote_not_tracked_keeps_behind_in_candidate(self) -> None:
-        """An unset branch behind its candidate keeps that count scoped inside."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
-                "feature": {
-                    "upstream": "unset",
-                    "remote_branch": "origin/feature",
-                    "ahead": 0,
-                    "behind": 3,
-                },
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            assert result["branches"] == {
-                "feature": {
-                    "remote_not_tracked": {"candidate": "origin/feature", "behind": 3},
-                },
-            }
-
-    def test_include_behind_false_filters_behind_only(self) -> None:
-        """Test that include_behind=False filters branches only behind."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
-                "main": {
-                    "upstream": "set",
-                    "remote_branch": "origin/main",
-                    "ahead": 0,
-                    "behind": 5,
-                },
-                "feature": {
-                    "upstream": "set",
-                    "remote_branch": "origin/feature",
-                    "ahead": 2,
-                    "behind": 0,
-                },
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            # main is only behind (needs pull) - should be filtered out
-            # feature is ahead - should be included
-            branches = result["branches"]
-            assert isinstance(branches, dict)
-            assert "main" not in branches
-            assert branches["feature"] == {"ahead": 2}
-
-    def test_include_behind_true_includes_behind_only(self) -> None:
-        """Test that include_behind=True includes branches only behind."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
-                "main": {
-                    "upstream": "set",
-                    "remote_branch": "origin/main",
-                    "ahead": 0,
-                    "behind": 5,
-                },
-                "feature": {
-                    "upstream": "set",
-                    "remote_branch": "origin/feature",
-                    "ahead": 2,
-                    "behind": 0,
-                },
-            }
-
-            result = repo_issues_in_branches(
-                mock_repo, ScanOptions(include_behind=True)
-            )
-
-            # Both branches should be included with include_behind=True
-            branches = result["branches"]
-            assert isinstance(branches, dict)
-            assert branches["main"] == {"behind": 5}
-            assert branches["feature"] == {"ahead": 2}
+                "wip": {"upstream": "not_set", "head": "def456"},
+            },
+            ScanOptions(include_all=True),
+        )
+        assert result["branches"] == {
+            "main": {"upstream": {"name": "origin/main"}, "head": "abc123"},
+            "wip": {"upstream": {"issue": "not_set"}, "head": "def456"},
+        }
 
     def test_worktree_attached_to_reported_branch(self) -> None:
         """A branch checked out in a worktree names it, but only if it has an issue."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
+        result = self._report(
+            {
                 "feature": {
                     "upstream": "set",
                     "remote_branch": "origin/feature",
@@ -1431,21 +1527,18 @@ class TestRepoIssuesInBranches:
                     "worktree": "/repo/main",
                 },
             }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions())
-
-            branches = result["branches"]
-            assert isinstance(branches, dict)
-            assert branches == {"feature": {"ahead": 2, "worktree": "/repo/feature-wt"}}
+        )
+        assert result["branches"] == {
+            "feature": {
+                "upstream": {"name": "origin/feature", "ahead": 2},
+                "worktree": "/repo/feature-wt",
+            }
+        }
 
     def test_worktree_attached_under_include_all(self) -> None:
         """Under --all, even a clean checked-out branch names its worktree."""
-        mock_repo = Mock(spec=Repo)
-
-        with patch(
-            "git_folder_status.git_folder_status.all_branches_status"
-        ) as mock_all_branches:
-            mock_all_branches.return_value = {
+        result = self._report(
+            {
                 "main": {
                     "upstream": "set",
                     "remote_branch": "origin/main",
@@ -1454,17 +1547,16 @@ class TestRepoIssuesInBranches:
                     "head": "abc123",
                     "worktree": "/repo/main",
                 },
-            }
-
-            result = repo_issues_in_branches(mock_repo, ScanOptions(include_all=True))
-
-            branches = result["branches"]
-            assert isinstance(branches, dict)
-            assert branches["main"] == {
-                "remote_branch": "origin/main",
+            },
+            ScanOptions(include_all=True),
+        )
+        assert result["branches"] == {
+            "main": {
+                "upstream": {"name": "origin/main"},
                 "head": "abc123",
                 "worktree": "/repo/main",
             }
+        }
 
 
 class TestRepoIssuesInTags:
@@ -2214,21 +2306,21 @@ class TestSimplifyReport:
     """Test simplify_report."""
 
     def test_lifts_bare_no_remote_branches(self) -> None:
-        """Branches whose only issue is `no_remote` become a flat list."""
+        """Branches with no upstream and nothing else become a flat list."""
         issues: dict[str, RepoStats] = {
-            "repo": {"branches": {"a": {"no_remote": True}}}
+            "repo": {"branches": {"a": {"upstream": {"issue": "not_set"}}}}
         }
 
         assert simplify_report(issues) == {"repo": {"branches_without_remote": ["a"]}}
 
     def test_keeps_branches_with_extra_keys(self) -> None:
-        """A record with anything besides `no_remote` stays in `branches`."""
+        """A record with anything besides a missing upstream stays in `branches`."""
         issues: dict[str, RepoStats] = {
             "repo": {
                 "branches": {
-                    "a": {"no_remote": True},
-                    "b": {"no_remote": True, "worktree": "wt"},
-                    "c": {"ahead": 2},
+                    "a": {"upstream": {"issue": "not_set"}},
+                    "b": {"upstream": {"issue": "not_set"}, "worktree": "wt"},
+                    "c": {"upstream": {"name": "origin/c", "ahead": 2}},
                 }
             }
         }
@@ -2237,8 +2329,8 @@ class TestSimplifyReport:
             "repo": {
                 "branches_without_remote": ["a"],
                 "branches": {
-                    "b": {"no_remote": True, "worktree": "wt"},
-                    "c": {"ahead": 2},
+                    "b": {"upstream": {"issue": "not_set"}, "worktree": "wt"},
+                    "c": {"upstream": {"name": "origin/c", "ahead": 2}},
                 },
             }
         }
@@ -2248,7 +2340,7 @@ class TestSimplifyReport:
         issues: dict[str, RepoStats] = {
             "repo": {
                 "is_dirty": True,
-                "branches": {"a": {"no_remote": True}},
+                "branches": {"a": {"upstream": {"issue": "not_set"}}},
                 "stash_count": 1,
             }
         }
@@ -2261,14 +2353,18 @@ class TestSimplifyReport:
 
     def test_no_bare_branches_is_a_noop(self) -> None:
         """Without a bare record, the entry is returned unchanged."""
-        issues: dict[str, RepoStats] = {"repo": {"branches": {"a": {"ahead": 1}}}}
+        issues: dict[str, RepoStats] = {
+            "repo": {"branches": {"a": {"upstream": {"name": "origin/a", "ahead": 1}}}}
+        }
 
         assert simplify_report(issues) == issues
 
     def test_include_all_context_blocks_the_lift(self) -> None:
         """Under `--all` every record carries `head`, so nothing is lifted."""
         issues: dict[str, RepoStats] = {
-            "repo": {"branches": {"a": {"no_remote": True, "head": "abc123"}}}
+            "repo": {
+                "branches": {"a": {"upstream": {"issue": "not_set"}, "head": "abc123"}}
+            }
         }
 
         assert simplify_report(issues) == issues
@@ -2283,8 +2379,12 @@ class TestSimplifyReport:
         """
         issues: dict[str, RepoStats] = {
             "repo": {
-                "/sub": {"branches": {"a": {"no_remote": True}}},
-                "worktrees": {"wt": {"/sub": {"branches": {"b": {"no_remote": True}}}}},
+                "/sub": {"branches": {"a": {"upstream": {"issue": "not_set"}}}},
+                "worktrees": {
+                    "wt": {
+                        "/sub": {"branches": {"b": {"upstream": {"issue": "not_set"}}}}
+                    }
+                },
             }
         }
 
