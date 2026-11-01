@@ -341,7 +341,12 @@ def repo_stats(repo: Repo, *, include_remotes: bool = True) -> RepoStats:
 
 
 def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
-    """Return issues in a repo."""
+    """Return issues in a repo.
+
+    A work tree with uncommitted or untracked files also names its checked-out
+    branch (`active_branch`), so the change can be tied to a branch; the name
+    is context, never an issue on its own.
+    """
     stats_to_include = {
         "is_dirty",
         "untracked_files",
@@ -351,6 +356,8 @@ def repo_issues_in_stats(repo: Repo, options: ScanOptions) -> RepoStats:
     }
     stats = repo_stats(repo, include_remotes=options.include_all)
     if not options.include_all:
+        if stats["is_dirty"] or stats["untracked_files"]:
+            stats_to_include.add("active_branch")
         stats = {k: v for k, v in stats.items() if k in stats_to_include}
     issues: RepoStats = {k: v for k, v in stats.items() if v}
     return issues
