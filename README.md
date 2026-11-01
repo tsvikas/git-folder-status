@@ -95,8 +95,13 @@ feature:
 for commits only it has. A branch whose commit is already in a remote default
 branch gets `merged_into` (e.g. `[origin/main]`) and only its same-named
 candidates: a merged commit is in every branch made from main since, so other
-names are not searched. Branches with no upstream and nothing else to report
-are listed together under `branches_without_remote`.
+names are not searched. A default branch already shown with counts (as the
+upstream, or as a same-named candidate such as `origin/main` for a local
+`main`) is not repeated in `merged_into`: no `ahead` there says the same. With
+`--slow`, a default branch on an unreachable remote is listed as a candidate
+with `issue: remote_unreachable` instead, since it may still hold the work.
+Branches with no upstream and nothing else to report are listed together under
+`branches_without_remote`.
 
 ## Contributing
 
