@@ -33,8 +33,9 @@ misses:
 - Branches ahead of or behind remote
 - Branches whose upstream cannot vouch for their work: none set, a local
   branch, a deleted or never-fetched remote branch, a remote that is not
-  configured, or a remote's default branch; with the same-named remote branches that may hold
-  the work, and the remote default branches it is already merged into
+  configured, or a remote's default branch; with the remote branches that may
+  hold the work (same-named, or holding its commit under another name), and the
+  remote default branches it is already merged into
 - Tags not on remote, or differing from remote (`--slow`)
 - Remotes that cannot be reached, and branches whose remote branch is gone
   or unreachable even if not yet pruned locally (`--slow`)
@@ -79,11 +80,11 @@ feature:
   upstream: # the branch it tracks
     name: origin/feature
     issue: remote_branch_deleted # or counts: ahead / behind
-  merged_into: # remote default branches holding its commits
-    - origin/main
-  remote_candidates: # same-named remote branches, closest first
-    - name: fork/feature
+  remote_candidates: # remote branches that may hold its work
+    - name: fork/feature # same name first
       ahead: 1 # 1 local commit is not there
+    - name: origin/feature-v2 # then others holding its commit, closest first
+      behind: 2 # 2 more commits there, e.g. a branch stacked on it
   worktree: ../feature-wt # checked out in another worktree
 ```
 
@@ -91,7 +92,10 @@ feature:
 `remote_not_configured`, `remote_branch_not_fetched`, `remote_branch_deleted`,
 `remote_unreachable` (`--slow`) or `is_default_branch`. A candidate has no
 `ahead` when it holds all of the branch's commits; it may still have `behind`,
-for commits only it has. Branches with no upstream and nothing else to report
+for commits only it has. A branch whose commit is already in a remote default
+branch gets `merged_into` (e.g. `[origin/main]`) and only its same-named
+candidates: a merged commit is in every branch made from main since, so other
+names are not searched. Branches with no upstream and nothing else to report
 are listed together under `branches_without_remote`.
 
 ## Contributing
