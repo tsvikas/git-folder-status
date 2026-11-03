@@ -1453,7 +1453,7 @@ class _FolderScan:
 
 # a folder in the walk, with its report when known without analysis (a broken
 # symlink), or else the analysis running on the pool
-_Entry = tuple[Path, "RepoStats | Future[_FolderScan]"]
+_Entry = tuple[Path, RepoStats | Future[_FolderScan]]
 
 
 @dataclass(frozen=True)
@@ -1461,15 +1461,22 @@ class _Walk:
     """Walks a tree, analyzing each folder on `pool` as soon as it is found.
 
     A folder that is not a repo is listed by the thread that found that out,
-    so the walk never waits for the analyses of unrelated folders.
+    so the walk never waits for the analyses of unrelated folders. Two rules
+    keep the threads apart:
+
+    - A task never waits on another task's future; only the calling thread
+      collects (see `_collect`). A task waiting on its children would
+      deadlock once the waiting tasks fill the pool.
+    - A task opens its own `Repo` and never hands it on: a `Repo` keeps
+      `git cat-file` pipes, which have no lock.
     """
 
     pool: Executor
     options: ScanOptions
     exclude_dirs: list[str]
 
-    def start(self, basedir: Path, recurse: int) -> list[_Entry]:
-        """List the folders under `basedir`, in glob order, and start each."""
+    def submit_children(self, basedir: Path, recurse: int) -> list[_Entry]:
+        """List the folders under `basedir`, in glob order, and submit each."""
         entries: list[_Entry] = []
         for folder in basedir.glob("*"):
             if folder.name[0] == "." or folder.name in self.exclude_dirs:
@@ -1490,16 +1497,16 @@ class _Walk:
         summary, identity = issues_for_one_folder(folder, self.options)
         children = None
         if not summary.get("is_git", True) and recurse > 0:
-            children = self.start(folder, recurse - 1)
+            children = self.submit_children(folder, recurse - 1)
         return _FolderScan(summary, identity, children)
 
 
 def _collect(
     entries: list[_Entry], identities: dict[Path, RepoIdentity]
 ) -> dict[Path, RepoStats]:
-    """Wait for the walk's results, and take them in its order.
+    """Wait for the walk's results, and take them in walk order.
 
-    So the report does not depend on which analysis finishes first.
+    The report then does not depend on which analysis finishes first.
     """
     issues: dict[Path, RepoStats] = {}
     for folder, entry in entries:
@@ -1536,12 +1543,11 @@ def _nested_repos(
     return result
 
 
-# Repos analyzed at once, one per thread; each `Repo` stays on its thread (its
-# `git cat-file` pipes have no lock). Python's side of every git call (starting
-# the process, parsing its output) runs on about one core in total, so more
-# threads stop helping at around this many. It also keeps `--slow` under
-# OpenSSH's default `MaxStartups` of 10 handshakes at once: past it a server
-# drops new connections at random, which would read as unreachable remotes.
+# Repos analyzed at once. Python's side of every git call (starting the
+# process, parsing its output) runs on about one core in total, so more threads
+# stop helping at around this many. It also keeps `--slow` under OpenSSH's
+# default `MaxStartups` of 10 handshakes at once: past it a server drops new
+# connections at random, which would read as unreachable remotes.
 DEFAULT_JOBS = 8
 
 
@@ -1605,7 +1611,8 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     identities: dict[Path, RepoIdentity] = {}
     with _thread_pool(jobs) as pool:
         walk = _Walk(pool, options, exclude_dirs or [])
-        issues_by_path = _collect(walk.start(basedir, recurse), identities)
+        entries = walk.submit_children(basedir, recurse)
+        issues_by_path = _collect(entries, identities)
         if scan_external_worktrees:
             _discover_external_worktrees(issues_by_path, identities, options, pool)
     issues = _group_worktrees(issues_by_path, identities, basedir)
