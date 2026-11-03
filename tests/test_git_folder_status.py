@@ -2242,7 +2242,7 @@ class TestParallelScan:
         _init_repo_with_commit(root / "nested" / "b").close()
         (root / "nested" / "loose.txt").write_text("x")
         # one worktree reached by two paths, so analyzed twice at once
-        (root / "nested" / "alias").symlink_to(root / "a")
+        (root / "nested" / "alias").symlink_to(root / "a-wt")
         (root / "plain").mkdir()
         (root / "plain" / "file.txt").write_text("x")
         (root / "empty").mkdir()
@@ -2337,7 +2337,7 @@ class TestParallelScan:
         assert "skipped" not in report
         worktrees = report["a"]["worktrees"]
         assert isinstance(worktrees, dict)
-        assert len(worktrees) == 2  # `a-wt` and `outside-wt`
+        assert len(worktrees) == 3  # `a-wt`, `nested/alias` and `outside-wt`
 
     def test_remotes_listed_once_across_threads(self, tmp_path: Path) -> None:
         """Threads asking for one repo's listing at once share one listing."""
