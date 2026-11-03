@@ -71,8 +71,8 @@ class ScanOptions:
 
     `slow` allows expensive operations: listing each remote over the network,
     to compare tags and to check that remote branches still exist. `include_all`
-    reports context beyond issues. `include_behind` keeps branches that are
-    only behind their upstream.
+    reports context beyond issues. `include_unpulled` keeps branches whose only
+    divergence is commits to pull from their upstream.
 
     `remote_listings` caches each repo's `RemoteListing` by its common git
     dir, so the worktrees of one repo share a single round of network calls.
@@ -80,7 +80,7 @@ class ScanOptions:
 
     slow: bool = False
     include_all: bool = False
-    include_behind: bool = False
+    include_unpulled: bool = False
     remote_listings: dict[Path, "RemoteListing"] = field(
         default_factory=dict, repr=False, compare=False
     )
@@ -529,9 +529,9 @@ def _matching_remote_branches(
     ]
 
 
-def _ahead_behind(repo: Repo, local: str, remote: str) -> tuple[int, int]:
-    """Return (ahead, behind): commits on `local` not on `remote`, and vice versa."""
-    out = repo.git.rev_list("--left-right", "--count", f"{local}...{remote}")
+def _ahead_behind(repo: Repo, ref: str, base: str) -> tuple[int, int]:
+    """Return (ahead, behind): commits on `ref` not on `base`, and vice versa."""
+    out = repo.git.rev_list("--left-right", "--count", f"{ref}...{base}")
     ahead, behind = out.split()
     return int(ahead), int(behind)
 
@@ -550,7 +550,9 @@ def _remote_candidates(  # noqa: PLR0913
     Those are the remote branches named like `branch`, plus `containing`:
     other remote branches holding its commit (a branch stacked on it, or one
     pushed under another name). Each entry has the remote branch's `name`, and
-    its `ahead`/`behind` counts against the local branch when non-zero. The
+    its `ahead`/`behind` counts against the local branch when non-zero: like
+    every count in the report, they describe the remote branch, so `behind`
+    counts local commits it lacks. The
     branch's own `upstream` is left out. With a `remotes` listing, a remote
     branch deleted on its remote is left out too (it holds nothing), and one on
     an unreachable remote is kept with `issue: remote_unreachable` and no
@@ -578,7 +580,7 @@ def _remote_candidates(  # noqa: PLR0913
         if state == "unreachable":
             entry["issue"] = "remote_unreachable"
         else:
-            ahead, behind = _ahead_behind(repo, f"refs/heads/{branch}", ref.path)
+            ahead, behind = _ahead_behind(repo, ref.path, f"refs/heads/{branch}")
             if ahead:
                 entry["ahead"] = ahead
             if behind:
@@ -608,7 +610,7 @@ def branch_status(  # noqa: PLR0913
     `branch_names` is `remote_branch_names(repo)`, read here when not given.
     `merged` names the remote default branches holding the branch's head (see
     `_merged_into`); those not already reported with counts (the usable
-    upstream, or a candidate) become `merged_into`, since having no `ahead`
+    upstream, or a candidate) become `merged_into`, since having no `behind`
     there says the same. `state` is the branch's `_branch_status`, when the
     caller already has it.
 
@@ -630,8 +632,10 @@ def branch_status(  # noqa: PLR0913
       local `main` tracking a remote whose default is `minimax-m3` counts too.
 
     `remote_branch` names the configured upstream, except for `not_set`.
-    Ahead/behind counts are computed for `set` only: against a default branch
-    they would measure drift, not unpushed work. Every other state carries
+    Ahead/behind counts are computed for `set` only, from the local branch's
+    view as git reports them (`_branch_record` turns them around): against a
+    default branch they would measure drift, not unpushed work. Every other
+    state carries
     `candidates`, the same-named remote branches plus `containing`, the remote
     branches holding its commit under another name (see `_remote_candidates`).
 
@@ -801,7 +805,7 @@ def all_branches_status(
     remotes: RemoteListing | None = None,
     *,
     include_all: bool = False,
-    include_behind: bool = False,
+    include_unpulled: bool = False,
 ) -> dict[str, RepoStats]:
     """Return the upstream status of all branches in a repo.
 
@@ -814,7 +818,7 @@ def all_branches_status(
     `remote_default_branches`) carries a `merged_into` list naming them: its
     commits are safe there (see `branch_status`). The lists are computed when
     any branch will be reported (see `_branch_has_issue`, with
-    `include_behind`), or for `include_all`. A reported branch always triggers
+    `include_unpulled`), or for `include_all`. A reported branch always triggers
     that itself, so whether it gets a list never depends on the other branches.
 
     A branch whose upstream has an issue also gets, as candidates, the remote
@@ -837,7 +841,8 @@ def all_branches_status(
     held: dict[str, list[_RemoteBranch]] = {}
     # skip the git calls when no branch can use the answer
     if include_all or any(
-        _branch_has_issue(st, include_behind=include_behind) for st in states.values()
+        _branch_has_issue(st, include_unpulled=include_unpulled)
+        for st in states.values()
     ):
         held = _merged_into(repo, defaults)
     search_other_names = any(defaults.values())
@@ -875,14 +880,14 @@ def all_branches_status(
     return result
 
 
-def _branch_has_issue(status: RepoStats, *, include_behind: bool) -> bool:
+def _branch_has_issue(status: RepoStats, *, include_unpulled: bool) -> bool:
     """Whether a branch's upstream status is worth reporting."""
     # any non-`set` upstream state is itself the issue
     if status["upstream"] != "set":
         return True
     if status.get("ahead"):
         return True
-    return bool(include_behind and status.get("behind"))
+    return bool(include_unpulled and status.get("behind"))
 
 
 # how each upstream state other than `set` is reported, as `upstream.issue`
@@ -902,7 +907,8 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
 
     Called only for a branch that is reported (see `_branch_has_issue`), or
     for any branch under `--all`. `upstream` holds the configured upstream's
-    `name`, and either its `issue` or its non-zero `ahead`/`behind` counts; for
+    `name`, and either its `issue` or its non-zero `ahead`/`behind` counts,
+    which describe the upstream (`behind` counts unpushed commits); for
     a reported branch one of those is always there. Under `--all`, a clean
     branch gets just the name, plus the branch's `head`. `merged_into` and
     `remote_candidates` qualify the upstream.
@@ -914,10 +920,11 @@ def _branch_record(status: RepoStats, *, include_all: bool) -> RepoStats:
     if state in _UPSTREAM_ISSUES:
         upstream["issue"] = _UPSTREAM_ISSUES[str(state)]
     else:  # set: counts are measured against the real configured upstream
-        if status.get("ahead"):
-            upstream["ahead"] = status["ahead"]
+        # the status counts are the local branch's; the report's are the upstream's
         if status.get("behind"):
-            upstream["behind"] = status["behind"]
+            upstream["ahead"] = status["behind"]
+        if status.get("ahead"):
+            upstream["behind"] = status["ahead"]
     record: RepoStats = {"upstream": upstream}
     if status.get("merged_into"):
         record["merged_into"] = status["merged_into"]
@@ -937,12 +944,12 @@ def repo_issues_in_branches(
         repo,
         remotes,
         include_all=options.include_all,
-        include_behind=options.include_behind,
+        include_unpulled=options.include_unpulled,
     )
     branches: RepoStats = {}
     for name, status in branches_st.items():
         if not options.include_all and not _branch_has_issue(
-            status, include_behind=options.include_behind
+            status, include_unpulled=options.include_unpulled
         ):
             continue
         # the predicate above (or include_all) guarantees a non-empty record
@@ -1045,14 +1052,15 @@ def repo_issues_in_tags(
 def _is_branch_behind_only(record: RepoStats) -> bool:
     """Whether a branch's only divergence is being behind its upstream.
 
-    For submodules such a branch is not worth reporting (see below), whereas
-    unpushed (`ahead`) commits and any upstream problem still are.
+    That is, the upstream is only `ahead`. For submodules such a branch is not
+    worth reporting (see below), whereas unpushed commits (the upstream is
+    `behind`) and any upstream problem still are.
     """
     upstream = record.get("upstream")
     return (
         isinstance(upstream, dict)
-        and "behind" in upstream
-        and not upstream.keys() & {"ahead", "issue"}
+        and "ahead" in upstream
+        and not upstream.keys() & {"behind", "issue"}
     )
 
 
@@ -1476,13 +1484,13 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     *,
     slow: bool = False,
     include_all: bool = False,
-    include_behind: bool = False,
+    include_unpulled: bool = False,
     scan_external_worktrees: bool = False,
 ) -> dict[str, RepoStats]:
     """Return issues for all repos in a folder."""
     basedir = Path(basedir)
     options = ScanOptions(
-        slow=slow, include_all=include_all, include_behind=include_behind
+        slow=slow, include_all=include_all, include_unpulled=include_unpulled
     )
     # if we are in a git repo, we only check this repo:
     try:

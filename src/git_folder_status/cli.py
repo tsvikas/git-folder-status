@@ -37,7 +37,7 @@ def git_folder_status(  # noqa: PLR0913
     empty: Annotated[bool, Parameter(alias="-e")] = False,
     include_all: Annotated[bool, Parameter(name=["-a", "--all"])] = False,
     slow: Annotated[bool, Parameter(alias="-s")] = False,
-    include_behind: Annotated[bool, Parameter(alias="-b")] = False,
+    include_unpulled: Annotated[bool, Parameter(alias="-u")] = False,
     scan_external_worktrees: Annotated[
         bool, Parameter(name=["-w", "--external-worktrees"])
     ] = False,
@@ -52,7 +52,8 @@ def git_folder_status(  # noqa: PLR0913
         empty: show also repos without issues
         include_all: show other info for repos
         slow: allow slow operations
-        include_behind: include branches that are only behind remote
+        include_unpulled: include branches whose only issue is unpulled commits
+            (their upstream is only `ahead`)
         scan_external_worktrees: also analyze worktrees located outside the
             scanned directory
 
@@ -71,7 +72,7 @@ def git_folder_status(  # noqa: PLR0913
         exclude_dir,
         slow=slow,
         include_all=include_all,
-        include_behind=include_behind,
+        include_unpulled=include_unpulled,
         scan_external_worktrees=scan_external_worktrees,
     )
     print(format_report(issues, include_ok=empty, fmt=fmt))

@@ -82,24 +82,27 @@ feature:
     issue: remote_branch_deleted # or counts: ahead / behind
   remote_candidates: # remote branches that may hold its work
     - name: fork/feature # same name first
-      ahead: 1 # 1 local commit is not there
+      behind: 1 # fork/feature lacks 1 local commit
     - name: origin/feature-v2 # then others holding its commit, closest first
-      behind: 2 # 2 more commits there, e.g. a branch stacked on it
+      ahead: 2 # 2 more commits there, e.g. a branch stacked on it
   worktree: ../feature-wt # checked out in another worktree
 ```
 
 `upstream.issue` is one of `not_set`, `is_local_branch`,
 `remote_not_configured`, `remote_branch_not_fetched`, `remote_branch_deleted`,
-`remote_unreachable` (`--slow`) or `is_default_branch`. A candidate has no
-`ahead` when it holds all of the branch's commits; it may still have `behind`,
-for commits only it has. A remote's default branches are the branch its
+`remote_unreachable` (`--slow`) or `is_default_branch`. Like in
+`git for-each-ref --format='%(ahead-behind:<ref>)'`, `ahead` and `behind`
+describe the remote branch they are listed under, compared with the local
+branch: `behind` counts local commits it lacks (unpushed work), `ahead` counts
+commits only it has. A candidate has no `behind` when it holds all of the
+branch's commits. A remote's default branches are the branch its
 `<remote>/HEAD` points to, plus `main`, `master` and `develop` if it has them
 (`develop` for gitflow repos). A branch whose commit is already in a remote default
 branch gets `merged_into` (e.g. `[origin/main]`) and only its same-named
 candidates: a merged commit is in every branch made from main since, so other
 names are not searched. A default branch already shown with counts (as the
 upstream, or as a same-named candidate such as `origin/main` for a local
-`main`) is not repeated in `merged_into`: no `ahead` there says the same. With
+`main`) is not repeated in `merged_into`: no `behind` there says the same. With
 `--slow`, a default branch on an unreachable remote is listed as a candidate
 with `issue: remote_unreachable` instead, since it may still hold the work.
 Branches with no upstream and nothing else to report are listed together under
