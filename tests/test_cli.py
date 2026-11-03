@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from git_folder_status import __version__, cli
+from git_folder_status import DEFAULT_JOBS, RepoStats, __version__, cli
 from git_folder_status.cli import (
     EX_NOINPUT,
     EX_NOPERM,
@@ -69,6 +71,26 @@ def test_main_unhandled_error(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main()
     assert exc_info.value.code == EX_SOFTWARE
+
+
+def test_jobs_reaches_the_scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`--jobs` sets how many repos the scan analyzes at once."""
+    seen: list[int] = []
+
+    def scan(*_args: object, jobs: int, **_kwargs: object) -> dict[str, RepoStats]:
+        seen.append(jobs)
+        return {}
+
+    monkeypatch.setattr(cli, "issues_for_all_subfolders", scan)
+    app([str(tmp_path)], result_action="return_value")
+    app(["-j", "3", str(tmp_path)], result_action="return_value")
+    assert seen == [DEFAULT_JOBS, 3]
+
+
+def test_jobs_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--jobs", "0", str(tmp_path)])
+    assert exc_info.value.code == 2
 
 
 def test_invalid_format() -> None:

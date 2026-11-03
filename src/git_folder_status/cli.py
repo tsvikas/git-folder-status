@@ -13,6 +13,7 @@ import cyclopts.types
 from cyclopts import App, Parameter
 
 from . import (
+    DEFAULT_JOBS,
     REPORT_FORMATS_TYPE,
     format_report,
     issues_for_all_subfolders,
@@ -41,6 +42,7 @@ def git_folder_status(  # noqa: PLR0913
     scan_external_worktrees: Annotated[
         bool, Parameter(name=["-w", "--external-worktrees"])
     ] = False,
+    jobs: Annotated[cyclopts.types.PositiveInt, Parameter(alias="-j")] = DEFAULT_JOBS,
 ) -> int:
     """Find all unsaved data in a directory.
 
@@ -56,6 +58,8 @@ def git_folder_status(  # noqa: PLR0913
             (their upstream is only `ahead`)
         scan_external_worktrees: also analyze worktrees located outside the
             scanned directory
+        jobs: repos to analyze at once; with --slow, 1 shows ssh prompts one
+            at a time
 
     Returns:
         The process exit code.
@@ -74,6 +78,7 @@ def git_folder_status(  # noqa: PLR0913
         include_all=include_all,
         include_unpulled=include_unpulled,
         scan_external_worktrees=scan_external_worktrees,
+        jobs=jobs,
     )
     print(format_report(issues, include_ok=empty, fmt=fmt))
     return 0
