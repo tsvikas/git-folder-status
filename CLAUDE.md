@@ -107,4 +107,10 @@ This project is based on `tsvikas/python-template` v0.19.1. Core configuration i
 ### Performance Considerations
 
 - Aim for quick Git code. Use `--slow` only if no other option works
-- The scan is sequential: keep per-repo work cheap and avoid extra Git subprocess calls
+- Repos are analyzed on parallel threads, one repo per thread, with results taken in walk order:
+  - never use one `Repo` from two threads (its `git cat-file` pipes have no lock); open a `Repo` per task
+  - run only git commands that are safe side by side in one repo, since its worktrees may be analyzed at once:
+    reads, and `git status` (it refreshes the index only if it gets the lock, and each worktree has its own index)
+  - guard state shared across repos with a lock (see `RemoteListings`)
+- Python's side of each git call (starting it, parsing its output) runs on about one core in total, and bounds the scan:
+  keep per-repo work cheap and avoid extra Git subprocess calls

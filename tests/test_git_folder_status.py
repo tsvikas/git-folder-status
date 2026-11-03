@@ -1,8 +1,12 @@
 """Tests for git_folder_status module."""
 
 import dataclasses
+import json
 import shutil
-from collections.abc import Iterator
+import time
+import zlib
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
@@ -13,6 +17,7 @@ from git import Actor, Git, GitCommandError, InvalidGitRepositoryError, Repo
 from git_folder_status.git_folder_status import (
     BranchRef,
     RemoteListing,
+    RemoteListings,
     RepoIdentity,
     RepoStats,
     ScanOptions,
@@ -21,6 +26,8 @@ from git_folder_status.git_folder_status import (
     _list_worktree_paths,
     _relative_key,
     _split_shared_stats,
+    _thread_pool,
+    _worktree_paths_of,
     all_branches_status,
     branch_status,
     is_file,
@@ -2101,6 +2108,181 @@ class TestIssuesForAllSubfolders:
             # Should mark the empty directory as not git
             assert "empty_subdir" in result
             assert result["empty_subdir"]["is_git"] is False
+
+
+_Analyze = Callable[[Path, ScanOptions], tuple[RepoStats, RepoIdentity | None]]
+
+
+class TestParallelScan:
+    """Test that analyzing repos on parallel threads changes nothing but speed."""
+
+    @staticmethod
+    def _tree(tmp_path: Path) -> Path:
+        """Build a scan root with each shape the walk treats differently."""
+        root = tmp_path / "scan"
+        with _init_repo_with_commit(tmp_path / "source") as source:
+            source.git.branch("-M", "main")
+        with Repo.clone_from(str(tmp_path / "source"), root / "clone") as clone:
+            _commit_file(clone, "unpushed.txt")
+        with _init_repo_with_commit(root / "a") as repo_a:
+            (root / "a" / "untracked.txt").write_text("x")
+            repo_a.git.branch("a-branch")
+            repo_a.git.worktree("add", str(root / "a-wt"), "-b", "inside")
+            repo_a.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "outside")
+            _add_submodule(repo_a, tmp_path / "source", "sub")
+        _init_repo_with_commit(root / "nested" / "b").close()
+        (root / "nested" / "loose.txt").write_text("x")
+        (root / "plain").mkdir()
+        (root / "plain" / "file.txt").write_text("x")
+        (root / "empty").mkdir()
+        (root / "broken").symlink_to(tmp_path / "missing")
+        _init_repo_with_commit(tmp_path / "elsewhere").close()
+        (root / "link").symlink_to(tmp_path / "elsewhere")
+        _init_repo_with_commit(root / "deep" / "er" / "than" / "recurse").close()
+        return root
+
+    @staticmethod
+    def _scrambled(real: _Analyze) -> _Analyze:
+        """Wrap `issues_for_one_folder` to finish in an order unlike the walk's."""
+
+        def analyze(
+            folder: Path, options: ScanOptions
+        ) -> tuple[RepoStats, RepoIdentity | None]:
+            time.sleep(zlib.crc32(folder.name.encode()) % 4 * 0.01)
+            return real(folder, options)
+
+        return analyze
+
+    @pytest.mark.parametrize(
+        ("slow", "include_all"),
+        [(False, False), (True, False), (False, True)],
+        ids=["default", "slow", "all"],
+    )
+    def test_report_does_not_depend_on_jobs(
+        self, tmp_path: Path, *, slow: bool, include_all: bool
+    ) -> None:
+        """One thread and many give the same report, in the same order."""
+        root = self._tree(tmp_path)
+
+        def scan(jobs: int) -> str:
+            report = issues_for_all_subfolders(
+                root,
+                recurse=2,
+                slow=slow,
+                include_all=include_all,
+                scan_external_worktrees=True,
+                jobs=jobs,
+            )
+            return json.dumps(report)  # unlike `==` on dicts, keeps the order
+
+        sequential = scan(jobs=1)
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder",
+            self._scrambled(issues_for_one_folder),
+        ):
+            parallel = scan(jobs=8)
+
+        assert parallel == sequential
+        report = json.loads(sequential)
+        assert set(report) >= {
+            "clone",
+            "a",
+            "nested/b",
+            "nested",
+            "plain",
+            "empty",
+            "broken",
+            "link",
+            "deep",
+        }
+        assert len(report["a"]["worktrees"]) == 2  # `a-wt` and `outside-wt`
+
+    def test_remotes_listed_once_across_threads(self, tmp_path: Path) -> None:
+        """Threads asking for one repo's listing at once share one listing."""
+        calls = 0
+
+        def slow_listing(_repo: Repo) -> RemoteListing:
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)  # keep the first listing running while others ask
+            return RemoteListing(refs={}, errors={})
+
+        listings = RemoteListings()
+        common_dir = tmp_path / "repo" / ".git"
+        with (
+            _init_repo_with_commit(tmp_path / "repo") as repo,
+            patch("git_folder_status.git_folder_status.list_remotes", slow_listing),
+            ThreadPoolExecutor(max_workers=8) as pool,
+        ):
+            results = list(pool.map(lambda _: listings.get(common_dir, repo), range(8)))
+
+        assert calls == 1
+        assert all(result is results[0] for result in results)
+
+    def test_error_drops_queued_work(self) -> None:
+        """A Ctrl-C while the pool runs cancels the work still queued."""
+        queued: list[Future[None]] = []
+
+        def until_cancelled() -> None:
+            deadline = time.monotonic() + 5
+            while not (queued and queued[0].cancelled()):
+                if time.monotonic() > deadline:
+                    return
+                time.sleep(0.001)
+
+        def scan() -> None:
+            with _thread_pool(1) as pool:
+                pool.submit(until_cancelled)
+                queued.append(pool.submit(time.sleep, 0))
+                raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            scan()
+        assert queued[0].cancelled()
+
+    def test_analysis_error_raised(self, tmp_path: Path) -> None:
+        """An unexpected error analyzing a nested folder still ends the scan."""
+        (tmp_path / "nested" / "repo").mkdir(parents=True)
+
+        def fail(folder: Path, _options: ScanOptions) -> tuple[RepoStats, None]:
+            if folder.name == "repo":
+                raise RuntimeError(f"Error while analyzing repo in '{folder}'")
+            return {"is_git": False}, None
+
+        with (
+            patch("git_folder_status.git_folder_status.issues_for_one_folder", fail),
+            pytest.raises(RuntimeError, match="Error while analyzing repo"),
+        ):
+            issues_for_all_subfolders(tmp_path, recurse=2)
+
+    def test_worktree_listing_of_unreadable_repo_is_empty(self, tmp_path: Path) -> None:
+        """A folder git cannot open as a repo has no worktrees to discover."""
+        (tmp_path / "not-a-repo").mkdir()
+        assert _worktree_paths_of(tmp_path / "not-a-repo") == []
+
+    def test_unreadable_external_worktree_left_out(self, tmp_path: Path) -> None:
+        """A listed worktree that does not analyze as a repo is left out."""
+        root = tmp_path / "scan"
+        with _init_repo_with_commit(root / "repo") as repo:
+            repo.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "outside")
+        real = issues_for_one_folder
+
+        def fail_outside(
+            folder: Path, options: ScanOptions
+        ) -> tuple[RepoStats, RepoIdentity | None]:
+            if folder.name == "outside-wt":
+                return {"error": "git error: fatal: broken"}, None
+            return real(folder, options)
+
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder", fail_outside
+        ):
+            result = issues_for_all_subfolders(
+                root, recurse=1, scan_external_worktrees=True
+            )
+
+        assert set(result) == {"repo"}
+        assert "worktrees" not in result["repo"]
 
 
 class TestRepoIdentity:
