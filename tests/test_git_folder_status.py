@@ -110,7 +110,7 @@ class TestFilterSubmoduleIssues:
         """Test that branches only behind remote are filtered out."""
         issues: RepoStats = {
             "branches": {
-                "main": {"upstream": {"name": "origin/main", "behind": 5}},
+                "main": {"upstream": {"name": "origin/main", "ahead": 5}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -121,7 +121,7 @@ class TestFilterSubmoduleIssues:
         """Test that branches with commits ahead are kept."""
         issues: RepoStats = {
             "branches": {
-                "main": {"upstream": {"name": "origin/main", "ahead": 2}},
+                "main": {"upstream": {"name": "origin/main", "behind": 2}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -134,7 +134,7 @@ class TestFilterSubmoduleIssues:
         """Test that branches both ahead and behind are kept."""
         issues: RepoStats = {
             "branches": {
-                "main": {"upstream": {"name": "origin/main", "ahead": 2, "behind": 3}},
+                "main": {"upstream": {"name": "origin/main", "behind": 2, "ahead": 3}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -166,8 +166,8 @@ class TestFilterSubmoduleIssues:
         """Test filtering when some branches are ahead and some only behind."""
         issues: RepoStats = {
             "branches": {
-                "main": {"upstream": {"name": "origin/main", "behind": 4}},
-                "feature": {"upstream": {"name": "origin/feature", "ahead": 1}},
+                "main": {"upstream": {"name": "origin/main", "ahead": 4}},
+                "feature": {"upstream": {"name": "origin/feature", "behind": 1}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -184,7 +184,7 @@ class TestFilterSubmoduleIssues:
             "untracked_files": ["file.txt"],
             "stash_count": 2,
             "branches": {
-                "main": {"upstream": {"name": "origin/main", "behind": 4}},
+                "main": {"upstream": {"name": "origin/main", "ahead": 4}},
             },
         }
         result = _filter_submodule_issues(issues)
@@ -572,7 +572,7 @@ class TestBranchStatus:
         mock_repo.git.rev_list.assert_called_once_with(
             "--left-right",
             "--count",
-            "refs/heads/feature...refs/remotes/origin/user/feature",
+            "refs/remotes/origin/user/feature...refs/heads/feature",
         )
 
     def test_matching_remote_prefers_exact_name(self) -> None:
@@ -899,7 +899,7 @@ class TestUpstreamIssues:
         }
 
     def test_merged_into_on_behind_only_branch(self, tmp_path: Path) -> None:
-        """With -b, a behind-only branch gets `merged_into` with no other issue."""
+        """With -u, a behind-only branch gets `merged_into` with no other issue."""
         with self._clone(tmp_path) as repo:
             repo.git.push("origin", "main:feature")
             repo.git.branch("--track", "feature", "origin/feature")
@@ -908,11 +908,11 @@ class TestUpstreamIssues:
                 _commit_file(source, "more.txt")
                 source.git.switch("main")
             repo.git.fetch()
-            result = repo_issues_in_branches(repo, ScanOptions(include_behind=True))
+            result = repo_issues_in_branches(repo, ScanOptions(include_unpulled=True))
 
         assert result["branches"] == {
             "feature": {
-                "upstream": {"name": "origin/feature", "behind": 1},
+                "upstream": {"name": "origin/feature", "ahead": 1},
                 "merged_into": ["origin/main"],
             }
         }
@@ -929,7 +929,7 @@ class TestUpstreamIssues:
 
         assert branches["fix"] == {
             "upstream": {"name": "origin/main", "issue": "is_default_branch"},
-            "remote_candidates": [{"name": "origin/fix", "ahead": 1}],
+            "remote_candidates": [{"name": "origin/fix", "behind": 1}],
         }
 
     def test_candidates_closest_first(self, tmp_path: Path) -> None:
@@ -949,7 +949,7 @@ class TestUpstreamIssues:
             "upstream": {"issue": "not_set"},
             "remote_candidates": [
                 {"name": "backup/wip"},
-                {"name": "fork/wip", "ahead": 1},
+                {"name": "fork/wip", "behind": 1},
             ],
         }
 
@@ -967,7 +967,7 @@ class TestUpstreamIssues:
 
         assert branches["a"] == {
             "upstream": {"issue": "not_set"},
-            "remote_candidates": [{"name": "origin/b", "behind": 2}],
+            "remote_candidates": [{"name": "origin/b", "ahead": 2}],
         }
 
     def test_same_name_before_other_names(self, tmp_path: Path) -> None:
@@ -984,7 +984,7 @@ class TestUpstreamIssues:
         assert branches["wip"] == {
             "upstream": {"issue": "not_set"},
             "remote_candidates": [
-                {"name": "origin/wip", "ahead": 1},
+                {"name": "origin/wip", "behind": 1},
                 {"name": "origin/wip-v2"},
             ],
         }
@@ -1549,7 +1549,7 @@ class TestRepoIssuesInBranches:
     def test_candidates_reported_with_their_counts(self) -> None:
         """Remote candidates keep their own counts, apart from the upstream's."""
         candidates: list[RepoStats] = [
-            {"name": "origin/feature", "ahead": 2},
+            {"name": "origin/feature", "behind": 2},
             {"name": "fork/feature"},
         ]
         result = self._report(
@@ -1595,7 +1595,7 @@ class TestRepoIssuesInBranches:
         )
         assert result == {}
 
-    def test_include_behind_false_filters_behind_only(self) -> None:
+    def test_include_unpulled_false_filters_behind_only(self) -> None:
         """Branches only behind their upstream are left out by default."""
         result = self._report(
             {
@@ -1614,11 +1614,11 @@ class TestRepoIssuesInBranches:
             }
         )
         assert result["branches"] == {
-            "feature": {"upstream": {"name": "origin/feature", "ahead": 2}}
+            "feature": {"upstream": {"name": "origin/feature", "behind": 2}}
         }
 
-    def test_include_behind_true_includes_behind_only(self) -> None:
-        """With include_behind, branches only behind are reported too."""
+    def test_include_unpulled_true_includes_behind_only(self) -> None:
+        """With include_unpulled, branches only behind are reported too."""
         result = self._report(
             {
                 "main": {
@@ -1628,10 +1628,10 @@ class TestRepoIssuesInBranches:
                     "behind": 5,
                 },
             },
-            ScanOptions(include_behind=True),
+            ScanOptions(include_unpulled=True),
         )
         assert result["branches"] == {
-            "main": {"upstream": {"name": "origin/main", "behind": 5}}
+            "main": {"upstream": {"name": "origin/main", "ahead": 5}}
         }
 
     def test_include_all_branches(self) -> None:
@@ -1677,7 +1677,7 @@ class TestRepoIssuesInBranches:
         )
         assert result["branches"] == {
             "feature": {
-                "upstream": {"name": "origin/feature", "ahead": 2},
+                "upstream": {"name": "origin/feature", "behind": 2},
                 "worktree": "/repo/feature-wt",
             }
         }
@@ -2467,7 +2467,7 @@ class TestSimplifyReport:
                 "branches": {
                     "a": {"upstream": {"issue": "not_set"}},
                     "b": {"upstream": {"issue": "not_set"}, "worktree": "wt"},
-                    "c": {"upstream": {"name": "origin/c", "ahead": 2}},
+                    "c": {"upstream": {"name": "origin/c", "behind": 2}},
                 }
             }
         }
@@ -2477,7 +2477,7 @@ class TestSimplifyReport:
                 "branches_without_remote": ["a"],
                 "branches": {
                     "b": {"upstream": {"issue": "not_set"}, "worktree": "wt"},
-                    "c": {"upstream": {"name": "origin/c", "ahead": 2}},
+                    "c": {"upstream": {"name": "origin/c", "behind": 2}},
                 },
             }
         }
@@ -2501,7 +2501,7 @@ class TestSimplifyReport:
     def test_no_bare_branches_is_a_noop(self) -> None:
         """Without a bare record, the entry is returned unchanged."""
         issues: dict[str, RepoStats] = {
-            "repo": {"branches": {"a": {"upstream": {"name": "origin/a", "ahead": 1}}}}
+            "repo": {"branches": {"a": {"upstream": {"name": "origin/a", "behind": 1}}}}
         }
 
         assert simplify_report(issues) == issues
