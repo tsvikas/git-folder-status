@@ -6,10 +6,13 @@ all Git repositories found within.
 Run `git-folder-status -h` for help.
 """
 
-import functools
+import contextlib
+import itertools
 import sys
+import threading
 from collections import ChainMap
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -65,6 +68,39 @@ SHARED_REPO_KEYS = frozenset(
 )
 
 
+# Repos whose remotes are listed at once, whatever `jobs` is. Past OpenSSH's
+# default `MaxStartups` of 10 handshakes at once, a server drops new
+# connections at random, which would read as unreachable remotes.
+MAX_REMOTE_LISTINGS = 8
+
+
+class RemoteListings:
+    """Each repo's `RemoteListing`, listed once per scan by its common git dir.
+
+    The worktrees of one repo share their remotes, so they share one round of
+    network calls. They may be analyzed on separate threads at once: a lock
+    per common git dir makes the later ones wait for the first listing. At
+    most `MAX_REMOTE_LISTINGS` repos are listed at once.
+    """
+
+    def __init__(self) -> None:
+        """Start with no listings."""
+        self._lock = threading.Lock()
+        self._locks: dict[Path, threading.Lock] = {}
+        self._listings: dict[Path, RemoteListing] = {}
+        self._network = threading.BoundedSemaphore(MAX_REMOTE_LISTINGS)
+
+    def get(self, common_dir: Path, repo: Repo) -> "RemoteListing":
+        """Return the listing for `common_dir`, listing `repo`'s remotes if new."""
+        with self._lock:
+            lock = self._locks.setdefault(common_dir, threading.Lock())
+        with lock:
+            if common_dir not in self._listings:
+                with self._network:
+                    self._listings[common_dir] = list_remotes(repo)
+            return self._listings[common_dir]
+
+
 @dataclass(frozen=True)
 class ScanOptions:
     """Flags controlling how each repo is analyzed, threaded through the scan.
@@ -74,15 +110,14 @@ class ScanOptions:
     reports context beyond issues. `include_unpulled` keeps branches whose only
     divergence is commits to pull from their upstream.
 
-    `remote_listings` caches each repo's `RemoteListing` by its common git
-    dir, so the worktrees of one repo share a single round of network calls.
+    `remote_listings` holds each repo's `RemoteListing` (see `RemoteListings`).
     """
 
     slow: bool = False
     include_all: bool = False
     include_unpulled: bool = False
-    remote_listings: dict[Path, "RemoteListing"] = field(
-        default_factory=dict, repr=False, compare=False
+    remote_listings: RemoteListings = field(
+        default_factory=RemoteListings, repr=False, compare=False
     )
 
 
@@ -374,14 +409,10 @@ class WorkTreeStatus:
 _STATUS_SHOWS_STASH = (2, 35)
 
 
-@functools.cache
-def _git_version() -> tuple[int, ...]:
-    """Return the git version, asked once per process.
-
-    GitPython caches `version_info` per `Repo`, which costs a `git version`
-    call for every scanned repo.
-    """
-    return Git().version_info
+# The git version, asked once at import, before any thread could ask too.
+# GitPython's own import already runs `git version`; its `version_info` is
+# cached per `Repo`, which would cost a call for every scanned repo.
+_GIT_VERSION: tuple[int, ...] = Git().version_info
 
 
 def work_tree_status(repo: Repo) -> WorkTreeStatus:
@@ -424,7 +455,7 @@ def work_tree_status(repo: Repo) -> WorkTreeStatus:
                 next(records)  # a rename's original path is a record of its own
         elif kind == "?":
             untracked.append(rest)
-    if _git_version() < _STATUS_SHOWS_STASH:
+    if _GIT_VERSION < _STATUS_SHOWS_STASH:
         stash_count = len(repo.git.stash("list").splitlines())
     return WorkTreeStatus(head, branch, is_dirty, untracked, stash_count)
 
@@ -1159,10 +1190,7 @@ def issues_for_one_folder(
             )
             remotes = None
             if options.slow:
-                remotes = options.remote_listings.get(identity.common_dir)
-                if remotes is None:
-                    remotes = list_remotes(repo)
-                    options.remote_listings[identity.common_dir] = remotes
+                remotes = options.remote_listings.get(identity.common_dir, repo)
             repo_st = repo_issues_in_stats(repo, options) | _remote_issues(
                 repo, remotes
             )
@@ -1373,94 +1401,140 @@ def _list_worktree_paths(repo: Repo) -> list[Path]:
     return paths
 
 
+def _worktree_paths_of(folder: Path) -> list[Path]:
+    """Return the worktree paths of the repo in `folder`, or none if unreadable."""
+    try:
+        with Repo(folder.resolve()) as repo:
+            return _list_worktree_paths(repo)
+    except (InvalidGitRepositoryError, GitCommandError):
+        return []
+
+
 def _discover_external_worktrees(
     issues_by_path: dict[Path, RepoStats],
     identities: dict[Path, RepoIdentity],
     options: ScanOptions,
+    pool: Executor,
 ) -> None:
     """Analyze worktrees that live outside the scanned tree, in place.
 
     All worktrees of a repo share one worktree list, so for each repo found in
     the scan we enumerate its worktrees and analyze any that were not already
     scanned, wherever they live. `issues_by_path` and `identities` are mutated.
+    The lists, and then the worktrees, are read on `pool`, and taken in the
+    order of the scan.
     """
     scanned = {path.resolve() for path in identities}
-    seen_common_dirs: set[Path] = set()
-    for folder, identity in list(identities.items()):
-        if identity.common_dir in seen_common_dirs:
-            continue
-        seen_common_dirs.add(identity.common_dir)
-        try:
-            with Repo(folder.resolve()) as repo:
-                worktree_paths = _list_worktree_paths(repo)
-        except (InvalidGitRepositoryError, GitCommandError):
-            continue
+    roots: dict[Path, Path] = {}  # the first folder of each repo
+    for folder, identity in identities.items():
+        roots.setdefault(identity.common_dir, folder)
+    new_paths: list[Path] = []
+    for worktree_paths in pool.map(_worktree_paths_of, roots.values()):
         for wt_path in worktree_paths:
             if wt_path.resolve() in scanned or not wt_path.is_dir():
                 continue
-            stats, wt_identity = issues_for_one_folder(wt_path, options)
-            if wt_identity is None:
-                continue
-            issues_by_path[wt_path] = stats
-            identities[wt_path] = wt_identity
             scanned.add(wt_path.resolve())
+            new_paths.append(wt_path)
+    results = pool.map(issues_for_one_folder, new_paths, itertools.repeat(options))
+    for wt_path, (stats, wt_identity) in zip(new_paths, results, strict=True):
+        if wt_identity is None:
+            continue
+        issues_by_path[wt_path] = stats
+        identities[wt_path] = wt_identity
 
 
-def _issues_for_all_subfolders(
-    basedir: Path,
-    recurse: int,
-    exclude_dirs: list[str] | None = None,
-    *,
-    options: ScanOptions,
-    identities: dict[Path, RepoIdentity],
+@dataclass(frozen=True)
+class _FolderScan:
+    """A scanned folder's report and identity (see `issues_for_one_folder`).
+
+    `children` holds the folders under it, when the walk descends into it.
+    """
+
+    summary: RepoStats
+    identity: RepoIdentity | None
+    children: "list[_Entry] | None"
+
+
+# a folder in the walk, with its analysis on the pool, or already done when
+# known without one (a broken symlink)
+_Entry = tuple[Path, Future[_FolderScan]]
+
+
+def _done(scan: _FolderScan) -> Future[_FolderScan]:
+    """Return a future that already holds `scan`."""
+    future: Future[_FolderScan] = Future()
+    future.set_result(scan)
+    return future
+
+
+@dataclass(frozen=True)
+class _Walk:
+    """Walks a tree, analyzing each folder on `pool` as soon as it is found.
+
+    A folder that is not a repo is listed by the thread that found that out,
+    so the walk never waits for the analyses of unrelated folders. Two rules
+    keep the threads apart:
+
+    - A task never waits on another task's future; only the calling thread
+      collects (see `_collect`). A task waiting on its children would
+      deadlock once the waiting tasks fill the pool.
+    - A task opens its own `Repo` and never hands it on: a `Repo` keeps
+      `git cat-file` pipes, which have no lock.
+    """
+
+    pool: Executor
+    options: ScanOptions
+    exclude_dirs: list[str]
+
+    def submit_children(self, basedir: Path, recurse: int) -> list[_Entry]:
+        """List the folders under `basedir`, in glob order, and submit each."""
+        entries: list[_Entry] = []
+        for folder in basedir.glob("*"):
+            if folder.name[0] == "." or folder.name in self.exclude_dirs:
+                continue
+            if folder.is_symlink():
+                if not folder.resolve().exists():
+                    link: RepoStats = {"broken_link": folder.readlink().as_posix()}
+                    entries.append((folder, _done(_FolderScan(link, None, None))))
+                    continue
+                if basedir in folder.resolve().parents:
+                    continue
+            if not folder.is_dir():
+                continue
+            entries.append((folder, self.pool.submit(self._scan, folder, recurse)))
+        return entries
+
+    def _scan(self, folder: Path, recurse: int) -> _FolderScan:
+        summary, identity = issues_for_one_folder(folder, self.options)
+        children = None
+        if not summary.get("is_git", True) and recurse > 0:
+            children = self.submit_children(folder, recurse - 1)
+        return _FolderScan(summary, identity, children)
+
+
+def _collect(
+    entries: list[_Entry], identities: dict[Path, RepoIdentity]
 ) -> dict[Path, RepoStats]:
-    exclude_dirs = exclude_dirs or []
+    """Wait for the walk's results, and take them in walk order.
+
+    The report then does not depend on which analysis finishes first.
+    """
     issues: dict[Path, RepoStats] = {}
-    for folder in basedir.glob("*"):
-        if folder.name[0] == "." or folder.name in exclude_dirs:
-            continue
-        if folder.is_symlink():
-            if not folder.resolve().exists():
-                issues[folder] = {"broken_link": folder.readlink().as_posix()}
-                continue
-            if basedir in folder.resolve().parents:
-                continue
-        if not folder.is_dir():
-            continue
-        summary, identity = issues_for_one_folder(folder, options)
-        if summary.get("is_git", True) or recurse <= 0:
-            issues[folder] = summary
-            if identity is not None:
-                identities[folder] = identity
+    for folder, entry in entries:
+        scan = entry.result()
+        if scan.children is None:
+            issues[folder] = scan.summary
+            if scan.identity is not None:
+                identities[folder] = scan.identity
         else:
-            issues.update(
-                _scan_nested_repos(
-                    folder,
-                    recurse,
-                    exclude_dirs,
-                    options=options,
-                    identities=identities,
-                )
-            )
+            issues.update(_nested_repos(folder, _collect(scan.children, identities)))
     return issues
 
 
-def _scan_nested_repos(
-    folder: Path,
-    recurse: int,
-    exclude_dirs: list[str],
-    *,
-    options: ScanOptions,
-    identities: dict[Path, RepoIdentity],
+def _nested_repos(
+    folder: Path, subfolder_summary: dict[Path, RepoStats]
 ) -> dict[Path, RepoStats]:
-    """Recurse into a non-repo folder and summarize the repos beneath it."""
-    subfolder_summary = _issues_for_all_subfolders(
-        folder,
-        recurse - 1,
-        exclude_dirs,
-        options=options,
-        identities=identities,
-    )
+    """Summarize a non-repo folder from the reports of the folders under it."""
     if not any(st.get("is_git", True) for st in subfolder_summary.values()):
         return {folder: {"is_git": False}}
     result: dict[Path, RepoStats] = dict(subfolder_summary)
@@ -1477,6 +1551,31 @@ def _scan_nested_repos(
     return result
 
 
+# Repos analyzed at once. Python's side of every git call (starting the
+# process, parsing its output) runs on about one core in total, so more threads
+# stop helping at around this many. `--slow`'s network calls have their own
+# cap, `MAX_REMOTE_LISTINGS`.
+DEFAULT_JOBS = 8
+
+
+@contextlib.contextmanager
+def _thread_pool(jobs: int) -> Iterator[Executor]:
+    """Run a thread pool of `jobs` threads; on an error, abandon its work.
+
+    The queued folders are dropped, and the error is raised without waiting
+    for the analyses still running: they finish on their own threads. The scan
+    only reads, so nothing is lost, and the CLI then exits without waiting for
+    them (see `cli._exit`).
+    """
+    pool = ThreadPoolExecutor(max_workers=jobs)
+    try:
+        yield pool
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
+
+
 def issues_for_all_subfolders(  # noqa: PLR0913
     basedir: Path,
     recurse: int,
@@ -1486,8 +1585,15 @@ def issues_for_all_subfolders(  # noqa: PLR0913
     include_all: bool = False,
     include_unpulled: bool = False,
     scan_external_worktrees: bool = False,
+    jobs: int = DEFAULT_JOBS,
 ) -> dict[str, RepoStats]:
-    """Return issues for all repos in a folder."""
+    """Return issues for all repos in a folder.
+
+    Up to `jobs` repos are analyzed at once, each on a thread of its own; the
+    report does not depend on `jobs`. `jobs` must be at least 1.
+    """
+    if jobs < 1:
+        raise ValueError(f"jobs must be at least 1, not {jobs}")
     basedir = Path(basedir)
     options = ScanOptions(
         slow=slow, include_all=include_all, include_unpulled=include_unpulled
@@ -1516,15 +1622,12 @@ def issues_for_all_subfolders(  # noqa: PLR0913
 
     # otherwise we check all subfolders:
     identities: dict[Path, RepoIdentity] = {}
-    issues_by_path = _issues_for_all_subfolders(
-        basedir,
-        recurse,
-        exclude_dirs,
-        options=options,
-        identities=identities,
-    )
-    if scan_external_worktrees:
-        _discover_external_worktrees(issues_by_path, identities, options)
+    with _thread_pool(jobs) as pool:
+        walk = _Walk(pool, options, exclude_dirs or [])
+        entries = walk.submit_children(basedir, recurse)
+        issues_by_path = _collect(entries, identities)
+        if scan_external_worktrees:
+            _discover_external_worktrees(issues_by_path, identities, options, pool)
     issues = _group_worktrees(issues_by_path, identities, basedir)
     for stats in issues.values():
         _relativize_worktree_paths(stats, basedir)

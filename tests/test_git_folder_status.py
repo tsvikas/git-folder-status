@@ -1,8 +1,13 @@
 """Tests for git_folder_status module."""
 
 import dataclasses
+import json
 import shutil
-from collections.abc import Iterator
+import threading
+import time
+import zlib
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
@@ -11,16 +16,22 @@ import pytest
 from git import Actor, Git, GitCommandError, InvalidGitRepositoryError, Repo
 
 from git_folder_status.git_folder_status import (
+    IGNORED_FILENAMES,
+    MAX_REMOTE_LISTINGS,
     BranchRef,
     RemoteListing,
+    RemoteListings,
     RepoIdentity,
     RepoStats,
     ScanOptions,
     _filter_submodule_issues,
-    _git_version,
+    _group_worktrees,
     _list_worktree_paths,
     _relative_key,
+    _relativize_worktree_paths,
     _split_shared_stats,
+    _thread_pool,
+    _worktree_paths_of,
     all_branches_status,
     branch_status,
     is_file,
@@ -321,10 +332,7 @@ class TestRepoStats:
         self._git(repo, "stash")
 
         with (
-            patch(
-                "git_folder_status.git_folder_status._git_version",
-                return_value=(2, 34, 1),
-            ),
+            patch("git_folder_status.git_folder_status._GIT_VERSION", (2, 34, 1)),
             self._spy_git_commands() as commands,
         ):
             assert work_tree_status(repo).stash_count == 1
@@ -335,22 +343,11 @@ class TestRepoStats:
         repo = _init_repo_with_commit(tmp_path)
 
         with (
-            patch(
-                "git_folder_status.git_folder_status._git_version",
-                return_value=(2, 56, 0),
-            ),
+            patch("git_folder_status.git_folder_status._GIT_VERSION", (2, 56, 0)),
             self._spy_git_commands() as commands,
         ):
             work_tree_status(repo)
         assert self._names(commands) == ["status"]
-
-    def test_git_version_asked_once(self) -> None:
-        """The git version is asked once per process, not once per repo."""
-        _git_version.cache_clear()
-        with self._spy_git_commands() as commands:
-            first = _git_version()
-            assert _git_version() == first
-        assert self._names(commands) == ["version"]
 
     def test_detached_head(self, tmp_path: Path) -> None:
         """A detached HEAD has no branch, and is checked for a containing ref."""
@@ -2101,6 +2098,354 @@ class TestIssuesForAllSubfolders:
             # Should mark the empty directory as not git
             assert "empty_subdir" in result
             assert result["empty_subdir"]["is_git"] is False
+
+
+_Analyze = Callable[[Path, ScanOptions], tuple[RepoStats, RepoIdentity | None]]
+
+
+def _sequential_walk(
+    basedir: Path,
+    recurse: int,
+    exclude_dirs: list[str],
+    options: ScanOptions,
+    identities: dict[Path, RepoIdentity],
+) -> dict[Path, RepoStats]:
+    """Walk one folder at a time, as `main` did before threads."""
+    issues: dict[Path, RepoStats] = {}
+    for folder in basedir.glob("*"):
+        if folder.name[0] == "." or folder.name in exclude_dirs:
+            continue
+        if folder.is_symlink():
+            if not folder.resolve().exists():
+                issues[folder] = {"broken_link": folder.readlink().as_posix()}
+                continue
+            if basedir in folder.resolve().parents:
+                continue
+        if not folder.is_dir():
+            continue
+        summary, identity = issues_for_one_folder(folder, options)
+        if summary.get("is_git", True) or recurse <= 0:
+            issues[folder] = summary
+            if identity is not None:
+                identities[folder] = identity
+        else:
+            nested = _sequential_walk(
+                folder, recurse - 1, exclude_dirs, options, identities
+            )
+            issues.update(_sequential_nested(folder, nested))
+    return issues
+
+
+def _sequential_nested(
+    folder: Path, nested: dict[Path, RepoStats]
+) -> dict[Path, RepoStats]:
+    """Summarize a non-repo folder, as `main` did before threads."""
+    if not any(st.get("is_git", True) for st in nested.values()):
+        return {folder: {"is_git": False}}
+    result = dict(nested)
+    loose = [
+        p.name
+        for p in folder.glob("*")
+        if p.is_file() and p.name not in IGNORED_FILENAMES
+    ]
+    if loose:
+        result[folder] = {"is_git": False, "untracked_files": shorten_list(loose)}
+    return result
+
+
+def _sequential_external_worktrees(
+    issues_by_path: dict[Path, RepoStats],
+    identities: dict[Path, RepoIdentity],
+    options: ScanOptions,
+) -> None:
+    """Add each repo's unscanned worktrees, as `main` did before threads."""
+    scanned = {path.resolve() for path in identities}
+    seen: set[Path] = set()
+    for folder, identity in list(identities.items()):
+        if identity.common_dir in seen:
+            continue
+        seen.add(identity.common_dir)
+        try:
+            with Repo(folder.resolve()) as repo:
+                worktree_paths = _list_worktree_paths(repo)
+        except (InvalidGitRepositoryError, GitCommandError):
+            continue
+        for wt_path in worktree_paths:
+            if wt_path.resolve() in scanned or not wt_path.is_dir():
+                continue
+            stats, wt_identity = issues_for_one_folder(wt_path, options)
+            if wt_identity is None:
+                continue
+            issues_by_path[wt_path] = stats
+            identities[wt_path] = wt_identity
+            scanned.add(wt_path.resolve())
+
+
+def _sequential_scan(
+    basedir: Path, recurse: int, exclude_dirs: list[str], options: ScanOptions
+) -> dict[str, RepoStats]:
+    """Scan with external worktrees as `main` did before threads: the oracle.
+
+    One folder at a time, in glob order, then each repo's worktree list. Kept
+    as it was, using only the per-repo analysis and the report post-processing,
+    which the threaded scan shares; none of the threaded walk.
+    """
+    identities: dict[Path, RepoIdentity] = {}
+    issues_by_path = _sequential_walk(
+        basedir, recurse, exclude_dirs, options, identities
+    )
+    _sequential_external_worktrees(issues_by_path, identities, options)
+    issues = _group_worktrees(issues_by_path, identities, basedir)
+    for stats in issues.values():
+        _relativize_worktree_paths(stats, basedir)
+    loose = [
+        p.name
+        for p in basedir.glob("*")
+        if is_file(p) and p.name not in IGNORED_FILENAMES
+    ]
+    if loose:
+        issues["."] = {"untracked_files": shorten_list(loose)}
+    return simplify_report(issues)
+
+
+class TestParallelScan:
+    """Test that analyzing repos on parallel threads changes nothing but speed."""
+
+    @staticmethod
+    def _tree(tmp_path: Path) -> Path:
+        """Build a scan root with each shape the walk treats differently."""
+        root = tmp_path / "scan"
+        with _init_repo_with_commit(tmp_path / "source") as source:
+            source.git.branch("-M", "main")
+        with Repo.clone_from(str(tmp_path / "source"), root / "clone") as clone:
+            _commit_file(clone, "unpushed.txt")
+        with _init_repo_with_commit(root / "a") as repo_a:
+            (root / "a" / "untracked.txt").write_text("x")
+            repo_a.git.branch("a-branch")
+            repo_a.git.worktree("add", str(root / "a-wt"), "-b", "inside")
+            repo_a.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "outside")
+            _add_submodule(repo_a, tmp_path / "source", "sub")
+        _init_repo_with_commit(root / "nested" / "b").close()
+        (root / "nested" / "loose.txt").write_text("x")
+        # one worktree reached by two paths, so analyzed twice at once
+        (root / "nested" / "alias").symlink_to(root / "a-wt")
+        (root / "plain").mkdir()
+        (root / "plain" / "file.txt").write_text("x")
+        (root / "empty").mkdir()
+        (root / "broken").symlink_to(tmp_path / "missing")
+        _init_repo_with_commit(tmp_path / "elsewhere").close()
+        (root / "link").symlink_to(tmp_path / "elsewhere")
+        (root / "inner-link").symlink_to(root / "clone")  # skipped: inside the scan
+        _init_repo_with_commit(root / "deep" / "er" / "than" / "recurse").close()
+        _init_repo_with_commit(root / "skipped").close()  # in `exclude_dirs`
+        return root
+
+    @staticmethod
+    def _scrambled(real: _Analyze, started: list[str], finished: list[str]) -> _Analyze:
+        """Wrap `issues_for_one_folder` so analyses finish out of walk order.
+
+        The first analysis waits until another one finishes, and the others
+        sleep by name, so on parallel threads `finished` never matches
+        `started`. Both list the analyses the pool runs, not the submodules
+        analyzed inside them.
+        """
+        lock = threading.Lock()
+        one_finished = threading.Event()
+        inside = threading.local()
+
+        def analyze(
+            folder: Path, options: ScanOptions
+        ) -> tuple[RepoStats, RepoIdentity | None]:
+            if getattr(inside, "folder", None) is not None:
+                return real(folder, options)  # a submodule, on the same thread
+            with lock:
+                first = not started
+                started.append(folder.name)
+            if first:
+                one_finished.wait(timeout=5)
+            else:
+                time.sleep(zlib.crc32(folder.name.encode()) % 4 * 0.01)
+            inside.folder = folder
+            try:
+                result = real(folder, options)
+            finally:
+                inside.folder = None
+            with lock:
+                finished.append(folder.name)
+            one_finished.set()
+            return result
+
+        return analyze
+
+    @pytest.mark.parametrize(
+        ("slow", "include_all"),
+        [(False, False), (True, False), (False, True)],
+        ids=["default", "slow", "all"],
+    )
+    def test_report_matches_the_sequential_scan(
+        self, tmp_path: Path, *, slow: bool, include_all: bool
+    ) -> None:
+        """Threads give the one-folder-at-a-time report, in the same order."""
+        root = self._tree(tmp_path)
+        options = ScanOptions(slow=slow, include_all=include_all)
+        expected = _sequential_scan(root, 2, ["skipped"], options)
+        started: list[str] = []
+        finished: list[str] = []
+
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder",
+            self._scrambled(issues_for_one_folder, started, finished),
+        ):
+            report = issues_for_all_subfolders(
+                root,
+                recurse=2,
+                exclude_dirs=["skipped"],
+                slow=slow,
+                include_all=include_all,
+                scan_external_worktrees=True,
+                jobs=8,
+            )
+
+        # unlike `==` on dicts, the JSON text also compares the key order
+        assert json.dumps(report) == json.dumps(expected)
+        assert finished != started
+        assert set(report) >= {
+            "clone",
+            "a",
+            "nested/b",
+            "nested",
+            "plain",
+            "empty",
+            "broken",
+            "link",
+            "deep",
+        }
+        assert "skipped" not in report
+        worktrees = report["a"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert len(worktrees) == 3  # `a-wt`, `nested/alias` and `outside-wt`
+
+    def test_remotes_listed_once_across_threads(self, tmp_path: Path) -> None:
+        """Threads asking for one repo's listing at once share one listing."""
+        calls = 0
+
+        def slow_listing(_repo: Repo) -> RemoteListing:
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)  # keep the first listing running while others ask
+            return RemoteListing(refs={}, errors={})
+
+        listings = RemoteListings()
+        common_dir = tmp_path / ".git"
+        with (
+            patch("git_folder_status.git_folder_status.list_remotes", slow_listing),
+            ThreadPoolExecutor(max_workers=8) as pool,
+        ):
+            results = list(
+                pool.map(lambda _: listings.get(common_dir, Mock(spec=Repo)), range(8))
+            )
+
+        assert calls == 1
+        assert all(result is results[0] for result in results)
+
+    def test_listings_capped_whatever_the_threads(self, tmp_path: Path) -> None:
+        """At most `MAX_REMOTE_LISTINGS` repos list their remotes at once."""
+        lock = threading.Lock()
+        running = peak = 0
+
+        def slow_listing(_repo: Repo) -> RemoteListing:
+            nonlocal running, peak
+            with lock:
+                running += 1
+                peak = max(peak, running)
+            time.sleep(0.05)
+            with lock:
+                running -= 1
+            return RemoteListing(refs={}, errors={})
+
+        listings = RemoteListings()
+        jobs = 2 * MAX_REMOTE_LISTINGS
+        with (
+            patch("git_folder_status.git_folder_status.list_remotes", slow_listing),
+            ThreadPoolExecutor(max_workers=jobs) as pool,
+        ):
+            list(
+                pool.map(
+                    lambda i: listings.get(tmp_path / str(i), Mock(spec=Repo)),
+                    range(jobs),
+                )
+            )
+
+        assert 1 < peak <= MAX_REMOTE_LISTINGS
+
+    def test_error_abandons_the_work(self) -> None:
+        """A Ctrl-C drops the queued work and is raised without waiting."""
+        release = threading.Event()
+        queued: list[Future[None]] = []
+        running: list[Future[bool]] = []
+
+        def scan() -> None:
+            with _thread_pool(1) as pool:
+                running.append(pool.submit(release.wait, 5))
+                queued.append(pool.submit(time.sleep, 0))
+                raise KeyboardInterrupt
+
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                scan()
+            assert queued[0].cancelled()
+            assert not running[0].done()  # raised while it still ran
+        finally:
+            release.set()
+        assert running[0].result(timeout=5)
+
+    def test_jobs_must_be_positive(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="jobs must be at least 1"):
+            issues_for_all_subfolders(tmp_path, recurse=1, jobs=0)
+
+    def test_analysis_error_raised(self, tmp_path: Path) -> None:
+        """An unexpected error analyzing a nested folder still ends the scan."""
+        (tmp_path / "nested" / "repo").mkdir(parents=True)
+
+        def fail(folder: Path, _options: ScanOptions) -> tuple[RepoStats, None]:
+            if folder.name == "repo":
+                raise RuntimeError(f"Error while analyzing repo in '{folder}'")
+            return {"is_git": False}, None
+
+        with (
+            patch("git_folder_status.git_folder_status.issues_for_one_folder", fail),
+            pytest.raises(RuntimeError, match="Error while analyzing repo"),
+        ):
+            issues_for_all_subfolders(tmp_path, recurse=2)
+
+    def test_worktree_listing_of_unreadable_repo_is_empty(self, tmp_path: Path) -> None:
+        """A folder git cannot open as a repo has no worktrees to discover."""
+        (tmp_path / "not-a-repo").mkdir()
+        assert _worktree_paths_of(tmp_path / "not-a-repo") == []
+
+    def test_unreadable_external_worktree_left_out(self, tmp_path: Path) -> None:
+        """A listed worktree that does not analyze as a repo is left out."""
+        root = tmp_path / "scan"
+        with _init_repo_with_commit(root / "repo") as repo:
+            repo.git.worktree("add", str(tmp_path / "outside-wt"), "-b", "outside")
+        real = issues_for_one_folder
+
+        def fail_outside(
+            folder: Path, options: ScanOptions
+        ) -> tuple[RepoStats, RepoIdentity | None]:
+            if folder.name == "outside-wt":
+                return {"error": "git error: fatal: broken"}, None
+            return real(folder, options)
+
+        with patch(
+            "git_folder_status.git_folder_status.issues_for_one_folder", fail_outside
+        ):
+            result = issues_for_all_subfolders(
+                root, recurse=1, scan_external_worktrees=True
+            )
+
+        assert set(result) == {"repo"}
+        assert "worktrees" not in result["repo"]
 
 
 class TestRepoIdentity:

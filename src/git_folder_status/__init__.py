@@ -9,12 +9,14 @@ from .format import (
     format_report,
 )
 from .git_folder_status import (
+    DEFAULT_JOBS,
     RepoStats,
     issues_for_all_subfolders,
 )
 
 __version__ = _version
 __all__: list[str] = [
+    "DEFAULT_JOBS",
     "REPORT_FORMATS_TYPE",
     "RepoStats",
     "format_report",
