@@ -69,12 +69,23 @@ SHARED_REPO_KEYS = frozenset(
 )
 
 
+class ScanStoppedError(Exception):
+    """Raised in a pool task once the scan stops, so the task starts no more git."""
+
+
+# Repos whose remotes are listed at once, whatever `jobs` is. Past OpenSSH's
+# default `MaxStartups` of 10 handshakes at once, a server drops new
+# connections at random, which would read as unreachable remotes.
+MAX_REMOTE_LISTINGS = 8
+
+
 class RemoteListings:
     """Each repo's `RemoteListing`, listed once per scan by its common git dir.
 
     The worktrees of one repo share their remotes, so they share one round of
     network calls. They may be analyzed on separate threads at once: a lock
-    per common git dir makes the later ones wait for the first listing.
+    per common git dir makes the later ones wait for the first listing. At
+    most `MAX_REMOTE_LISTINGS` repos are listed at once.
     """
 
     def __init__(self) -> None:
@@ -82,14 +93,21 @@ class RemoteListings:
         self._lock = threading.Lock()
         self._locks: dict[Path, threading.Lock] = {}
         self._listings: dict[Path, RemoteListing] = {}
+        self._network = threading.BoundedSemaphore(MAX_REMOTE_LISTINGS)
 
-    def get(self, common_dir: Path, repo: Repo) -> "RemoteListing":
-        """Return the listing for `common_dir`, listing `repo`'s remotes if new."""
+    def get(
+        self, common_dir: Path, repo: Repo, stop: threading.Event | None = None
+    ) -> "RemoteListing":
+        """Return the listing for `common_dir`, listing `repo`'s remotes if new.
+
+        `stop` is passed on to `list_remotes`.
+        """
         with self._lock:
             lock = self._locks.setdefault(common_dir, threading.Lock())
         with lock:
             if common_dir not in self._listings:
-                self._listings[common_dir] = list_remotes(repo)
+                with self._network:
+                    self._listings[common_dir] = list_remotes(repo, stop)
             return self._listings[common_dir]
 
 
@@ -103,6 +121,8 @@ class ScanOptions:
     divergence is commits to pull from their upstream.
 
     `remote_listings` holds each repo's `RemoteListing` (see `RemoteListings`).
+    `stop` is set when the scan ends early, on an error or Ctrl-C; analyses
+    still running then raise `ScanStoppedError` instead of starting more git.
     """
 
     slow: bool = False
@@ -110,6 +130,9 @@ class ScanOptions:
     include_unpulled: bool = False
     remote_listings: RemoteListings = field(
         default_factory=RemoteListings, repr=False, compare=False
+    )
+    stop: threading.Event = field(
+        default_factory=threading.Event, repr=False, compare=False
     )
 
 
@@ -1025,15 +1048,19 @@ def _git_error_message(e: GitCommandError) -> str:
     return (errors or lines)[0]
 
 
-def list_remotes(repo: Repo) -> RemoteListing:
+def list_remotes(repo: Repo, stop: threading.Event | None = None) -> RemoteListing:
     """List every remote once, recording a failure instead of raising it.
 
     One dead remote must not hide the rest of the repo's report, nor the
-    other remotes' tags and branches.
+    other remotes' tags and branches. Once `stop` is set, raises
+    `ScanStoppedError` before the next remote: a Ctrl-C kills only the
+    `ls-remote` running then, and each may wait a minute on a dead host.
     """
     refs: dict[str, dict[str, str]] = {}
     errors: dict[str, str] = {}
     for remote in repo.remotes:
+        if stop is not None and stop.is_set():
+            raise ScanStoppedError
         try:
             refs[remote.name] = _remote_refs(repo, remote.name)
         except GitCommandError as e:
@@ -1174,8 +1201,11 @@ def issues_for_one_folder(
     """Return issues for a repo in a folder, plus its repo identity.
 
     The identity is `None` when the folder is not a (readable) git repo. It is
-    used by the caller to group worktrees of the same repo together.
+    used by the caller to group worktrees of the same repo together. Raises
+    `ScanStoppedError` once `options.stop` is set (see `ScanOptions`).
     """
+    if options.stop.is_set():
+        raise ScanStoppedError
     try:
         with Repo(
             folder.resolve(), search_parent_directories=folder.is_symlink()
@@ -1186,7 +1216,9 @@ def issues_for_one_folder(
             )
             remotes = None
             if options.slow:
-                remotes = options.remote_listings.get(identity.common_dir, repo)
+                remotes = options.remote_listings.get(
+                    identity.common_dir, repo, options.stop
+                )
             repo_st = repo_issues_in_stats(repo, options) | _remote_issues(
                 repo, remotes
             )
@@ -1214,6 +1246,8 @@ def issues_for_one_folder(
         if is_orphaned_worktree(folder):
             return {"error": "orphaned worktree"}, None
         return {"error": f"git error: {_git_error_message(e)}"}, None
+    except ScanStoppedError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Error while analyzing repo in '{folder}'") from e
     else:
@@ -1451,9 +1485,16 @@ class _FolderScan:
     children: "list[_Entry] | None"
 
 
-# a folder in the walk, with its report when known without analysis (a broken
-# symlink), or else the analysis running on the pool
-_Entry = tuple[Path, RepoStats | Future[_FolderScan]]
+# a folder in the walk, with its analysis on the pool, or already done when
+# known without one (a broken symlink)
+_Entry = tuple[Path, Future[_FolderScan]]
+
+
+def _done(scan: _FolderScan) -> Future[_FolderScan]:
+    """Return a future that already holds `scan`."""
+    future: Future[_FolderScan] = Future()
+    future.set_result(scan)
+    return future
 
 
 @dataclass(frozen=True)
@@ -1484,7 +1525,7 @@ class _Walk:
             if folder.is_symlink():
                 if not folder.resolve().exists():
                     link: RepoStats = {"broken_link": folder.readlink().as_posix()}
-                    entries.append((folder, link))
+                    entries.append((folder, _done(_FolderScan(link, None, None))))
                     continue
                 if basedir in folder.resolve().parents:
                     continue
@@ -1510,9 +1551,6 @@ def _collect(
     """
     issues: dict[Path, RepoStats] = {}
     for folder, entry in entries:
-        if not isinstance(entry, Future):
-            issues[folder] = entry
-            continue
         scan = entry.result()
         if scan.children is None:
             issues[folder] = scan.summary
@@ -1545,22 +1583,25 @@ def _nested_repos(
 
 # Repos analyzed at once. Python's side of every git call (starting the
 # process, parsing its output) runs on about one core in total, so more threads
-# stop helping at around this many. It also keeps `--slow` under OpenSSH's
-# default `MaxStartups` of 10 handshakes at once: past it a server drops new
-# connections at random, which would read as unreachable remotes.
+# stop helping at around this many. `--slow`'s network calls have their own
+# cap, `MAX_REMOTE_LISTINGS`.
 DEFAULT_JOBS = 8
 
 
 @contextlib.contextmanager
-def _thread_pool(jobs: int) -> Iterator[Executor]:
-    """Run a thread pool of `jobs` threads; on an error, drop the queued work.
+def _thread_pool(jobs: int, stop: threading.Event) -> Iterator[Executor]:
+    """Run a thread pool of `jobs` threads; on an error, stop the scan.
 
-    Without that, an error or Ctrl-C would still wait for every queued folder
-    to be analyzed.
+    The queued work is dropped, and `stop` is set so the analyses still running
+    start no more git calls. Without that, an error or Ctrl-C would still wait
+    for every queued folder, and for each running one to finish.
     """
     pool = ThreadPoolExecutor(max_workers=jobs)
     try:
         yield pool
+    except BaseException:
+        stop.set()
+        raise
     finally:
         pool.shutdown(cancel_futures=True)
 
@@ -1609,7 +1650,8 @@ def issues_for_all_subfolders(  # noqa: PLR0913
 
     # otherwise we check all subfolders:
     identities: dict[Path, RepoIdentity] = {}
-    with _thread_pool(jobs) as pool:
+    _git_version()  # asked once here, not by each of the first threads at once
+    with _thread_pool(jobs, options.stop) as pool:
         walk = _Walk(pool, options, exclude_dirs or [])
         entries = walk.submit_children(basedir, recurse)
         issues_by_path = _collect(entries, identities)

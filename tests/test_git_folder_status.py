@@ -17,12 +17,14 @@ from git import Actor, Git, GitCommandError, InvalidGitRepositoryError, Repo
 
 from git_folder_status.git_folder_status import (
     IGNORED_FILENAMES,
+    MAX_REMOTE_LISTINGS,
     BranchRef,
     RemoteListing,
     RemoteListings,
     RepoIdentity,
     RepoStats,
     ScanOptions,
+    ScanStoppedError,
     _filter_submodule_issues,
     _git_version,
     _group_worktrees,
@@ -2343,7 +2345,7 @@ class TestParallelScan:
         """Threads asking for one repo's listing at once share one listing."""
         calls = 0
 
-        def slow_listing(_repo: Repo) -> RemoteListing:
+        def slow_listing(_repo: Repo, _stop: object) -> RemoteListing:
             nonlocal calls
             calls += 1
             time.sleep(0.05)  # keep the first listing running while others ask
@@ -2362,8 +2364,39 @@ class TestParallelScan:
         assert calls == 1
         assert all(result is results[0] for result in results)
 
-    def test_error_drops_queued_work(self) -> None:
-        """A Ctrl-C while the pool runs cancels the work still queued."""
+    def test_listings_capped_whatever_the_threads(self, tmp_path: Path) -> None:
+        """At most `MAX_REMOTE_LISTINGS` repos list their remotes at once."""
+        lock = threading.Lock()
+        running = peak = 0
+
+        def slow_listing(_repo: Repo, _stop: object) -> RemoteListing:
+            nonlocal running, peak
+            with lock:
+                running += 1
+                peak = max(peak, running)
+            time.sleep(0.05)
+            with lock:
+                running -= 1
+            return RemoteListing(refs={}, errors={})
+
+        listings = RemoteListings()
+        jobs = 2 * MAX_REMOTE_LISTINGS
+        with (
+            patch("git_folder_status.git_folder_status.list_remotes", slow_listing),
+            ThreadPoolExecutor(max_workers=jobs) as pool,
+        ):
+            list(
+                pool.map(
+                    lambda i: listings.get(tmp_path / str(i), Mock(spec=Repo)),
+                    range(jobs),
+                )
+            )
+
+        assert 1 < peak <= MAX_REMOTE_LISTINGS
+
+    def test_error_stops_the_scan(self) -> None:
+        """A Ctrl-C cancels the queued work and tells the running work to stop."""
+        stop = threading.Event()
         queued: list[Future[None]] = []
 
         def until_cancelled() -> None:
@@ -2374,7 +2407,7 @@ class TestParallelScan:
                 time.sleep(0.001)
 
         def scan() -> None:
-            with _thread_pool(1) as pool:
+            with _thread_pool(1, stop) as pool:
                 pool.submit(until_cancelled)
                 queued.append(pool.submit(time.sleep, 0))
                 raise KeyboardInterrupt
@@ -2382,6 +2415,79 @@ class TestParallelScan:
         with pytest.raises(KeyboardInterrupt):
             scan()
         assert queued[0].cancelled()
+        assert stop.is_set()
+
+    def test_finished_scan_leaves_stop_clear(self) -> None:
+        """Without an error, the pool does not stop anything."""
+        stop = threading.Event()
+        with _thread_pool(2, stop) as pool:
+            assert pool.submit(int, "3").result() == 3
+        assert not stop.is_set()
+
+    def test_stopped_listing_skips_the_other_remotes(self, tmp_path: Path) -> None:
+        """Once the scan stops, the remotes not yet listed are not listed."""
+        with _init_repo_with_commit(tmp_path / "repo") as repo:
+            repo.create_remote("first", str(tmp_path / "first"))
+            repo.create_remote("second", str(tmp_path / "second"))
+            stop = threading.Event()
+            listed: list[str] = []
+
+            def list_and_stop(_repo: Repo, remote: str) -> dict[str, str]:
+                listed.append(remote)
+                stop.set()  # as on a Ctrl-C during this remote's `ls-remote`
+                return {}
+
+            with (
+                patch(
+                    "git_folder_status.git_folder_status._remote_refs", list_and_stop
+                ),
+                pytest.raises(ScanStoppedError),
+            ):
+                list_remotes(repo, stop)
+
+        assert listed == ["first"]
+
+    def test_stopped_scan_analyzes_nothing(self, tmp_path: Path) -> None:
+        """An analysis started after the scan stopped raises before any git."""
+        _init_repo_with_commit(tmp_path / "repo").close()
+        options = ScanOptions()
+        options.stop.set()
+        with pytest.raises(ScanStoppedError):
+            issues_for_one_folder(tmp_path / "repo", options)
+
+    def test_stop_during_listing_is_not_an_analysis_error(self, tmp_path: Path) -> None:
+        """A stop while listing remotes ends the analysis, not as a repo error."""
+        _init_repo_with_commit(tmp_path / "repo").close()
+
+        def stopped(_repo: Repo, _stop: object) -> RemoteListing:
+            raise ScanStoppedError
+
+        with (
+            patch("git_folder_status.git_folder_status.list_remotes", stopped),
+            pytest.raises(ScanStoppedError),
+        ):
+            issues_for_one_folder(tmp_path / "repo", ScanOptions(slow=True))
+
+    def test_git_version_asked_once(self, tmp_path: Path) -> None:
+        """Threads starting together do not each ask git for its version."""
+        for name in ("a", "b", "c", "d"):
+            _init_repo_with_commit(tmp_path / name).close()
+
+        def slow_version() -> tuple[int, ...]:
+            time.sleep(0.05)  # long enough for the first threads to overlap
+            return (2, 50, 0)
+
+        git_class = MagicMock()
+        type(git_class.return_value).version_info = PropertyMock(
+            side_effect=slow_version
+        )
+        _git_version.cache_clear()
+        try:
+            with patch("git_folder_status.git_folder_status.Git", git_class):
+                issues_for_all_subfolders(tmp_path, recurse=1, jobs=8)
+        finally:
+            _git_version.cache_clear()
+        assert git_class.call_count == 1
 
     def test_analysis_error_raised(self, tmp_path: Path) -> None:
         """An unexpected error analyzing a nested folder still ends the scan."""
