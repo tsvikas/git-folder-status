@@ -1391,7 +1391,11 @@ def _discover_external_worktrees(
             continue
         seen_common_dirs.add(identity.common_dir)
         try:
-            with Repo(folder.resolve()) as repo:
+            # open it as `issues_for_one_folder` did: a symlink may point into
+            # a subfolder of the repo
+            with Repo(
+                folder.resolve(), search_parent_directories=folder.is_symlink()
+            ) as repo:
                 worktree_paths = _list_worktree_paths(repo)
         except (InvalidGitRepositoryError, GitCommandError):
             continue

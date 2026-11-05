@@ -2274,6 +2274,26 @@ def _init_repo_with_commit(path: Path) -> Repo:
 class TestWorktreeGrouping:
     """Test that worktrees of one repo are grouped under their main worktree."""
 
+    def test_symlink_into_repo_finds_its_external_worktrees(
+        self, tmp_path: Path
+    ) -> None:
+        """A repo reached through a symlink into its subfolder still lists them."""
+        repo = _init_repo_with_commit(tmp_path / "outside" / "repo")
+        (tmp_path / "outside" / "repo" / "sub").mkdir()
+        repo.git.worktree("add", str(tmp_path / "wt"), "-b", "elsewhere")
+        repo.close()
+        scan = tmp_path / "scan"
+        scan.mkdir()
+        (scan / "link").symlink_to(tmp_path / "outside" / "repo" / "sub")
+
+        result = issues_for_all_subfolders(
+            scan, recurse=1, scan_external_worktrees=True
+        )
+
+        worktrees = result["link"]["worktrees"]
+        assert isinstance(worktrees, dict)
+        assert any(key.endswith("wt") for key in worktrees)
+
     def test_linked_worktree_nested_under_main(self, tmp_path: Path) -> None:
         """A linked worktree is nested, not reported as a sibling repo."""
         repo = _init_repo_with_commit(tmp_path / "repo")
