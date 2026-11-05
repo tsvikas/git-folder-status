@@ -93,11 +93,14 @@ class RepoIdentity:
     `common_dir` is git's shared git dir (`--git-common-dir`): all worktrees of
     one repo share it, so it is the key used to group them. `git_dir` is this
     worktree's own git dir, which differs from `common_dir` only for a linked
-    worktree.
+    worktree. `work_tree` is the root of this worktree, which for a folder
+    reached through a symlink into the repo is not the folder itself; it is
+    `None` in a bare repo.
     """
 
     common_dir: Path
     git_dir: Path
+    work_tree: Path | None = None
 
     @property
     def is_linked_worktree(self) -> bool:
@@ -1156,6 +1159,11 @@ def issues_for_one_folder(
             identity = RepoIdentity(
                 common_dir=Path(repo.common_dir).resolve(),
                 git_dir=Path(repo.git_dir).resolve(),
+                work_tree=(
+                    None
+                    if repo.working_tree_dir is None
+                    else Path(repo.working_tree_dir).resolve()
+                ),
             )
             remotes = None
             if options.slow:
@@ -1384,14 +1392,19 @@ def _discover_external_worktrees(
     the scan we enumerate its worktrees and analyze any that were not already
     scanned, wherever they live. `issues_by_path` and `identities` are mutated.
     """
-    scanned = {path.resolve() for path in identities}
+    # compare worktree roots: a scanned folder may be a symlink into a subfolder
+    scanned = {path.resolve() for path in identities} | {
+        identity.work_tree
+        for identity in identities.values()
+        if identity.work_tree is not None
+    }
     seen_common_dirs: set[Path] = set()
-    for folder, identity in list(identities.items()):
+    for identity in list(identities.values()):
         if identity.common_dir in seen_common_dirs:
             continue
         seen_common_dirs.add(identity.common_dir)
         try:
-            with Repo(folder.resolve()) as repo:
+            with Repo(identity.common_dir) as repo:
                 worktree_paths = _list_worktree_paths(repo)
         except (InvalidGitRepositoryError, GitCommandError):
             continue
