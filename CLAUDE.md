@@ -113,5 +113,7 @@ This project is based on `tsvikas/python-template` v0.19.1. Core configuration i
   - run only git commands that are safe side by side in one repo, since its worktrees, or one worktree reached by
     two paths, may be analyzed at once: reads, and `git status` (it refreshes the index only if it gets the lock)
   - guard state shared across repos with a lock (see `RemoteListings`)
+  - on an error or Ctrl-C the scan abandons its running analyses (it only reads), and the CLI exits without
+    waiting for them (see `_thread_pool`, `cli._exit`); per-repo code needs no stop checks
 - Python's side of each git call (starting it, parsing its output) runs on about one core in total, and bounds the scan:
   keep per-repo work cheap and avoid extra Git subprocess calls

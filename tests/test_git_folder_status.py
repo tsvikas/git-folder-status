@@ -24,9 +24,7 @@ from git_folder_status.git_folder_status import (
     RepoIdentity,
     RepoStats,
     ScanOptions,
-    ScanStoppedError,
     _filter_submodule_issues,
-    _git_version,
     _group_worktrees,
     _list_worktree_paths,
     _relative_key,
@@ -334,10 +332,7 @@ class TestRepoStats:
         self._git(repo, "stash")
 
         with (
-            patch(
-                "git_folder_status.git_folder_status._git_version",
-                return_value=(2, 34, 1),
-            ),
+            patch("git_folder_status.git_folder_status._GIT_VERSION", (2, 34, 1)),
             self._spy_git_commands() as commands,
         ):
             assert work_tree_status(repo).stash_count == 1
@@ -348,22 +343,11 @@ class TestRepoStats:
         repo = _init_repo_with_commit(tmp_path)
 
         with (
-            patch(
-                "git_folder_status.git_folder_status._git_version",
-                return_value=(2, 56, 0),
-            ),
+            patch("git_folder_status.git_folder_status._GIT_VERSION", (2, 56, 0)),
             self._spy_git_commands() as commands,
         ):
             work_tree_status(repo)
         assert self._names(commands) == ["status"]
-
-    def test_git_version_asked_once(self) -> None:
-        """The git version is asked once per process, not once per repo."""
-        _git_version.cache_clear()
-        with self._spy_git_commands() as commands:
-            first = _git_version()
-            assert _git_version() == first
-        assert self._names(commands) == ["version"]
 
     def test_detached_head(self, tmp_path: Path) -> None:
         """A detached HEAD has no branch, and is checked for a containing ref."""
@@ -2345,7 +2329,7 @@ class TestParallelScan:
         """Threads asking for one repo's listing at once share one listing."""
         calls = 0
 
-        def slow_listing(_repo: Repo, _stop: object) -> RemoteListing:
+        def slow_listing(_repo: Repo) -> RemoteListing:
             nonlocal calls
             calls += 1
             time.sleep(0.05)  # keep the first listing running while others ask
@@ -2369,7 +2353,7 @@ class TestParallelScan:
         lock = threading.Lock()
         running = peak = 0
 
-        def slow_listing(_repo: Repo, _stop: object) -> RemoteListing:
+        def slow_listing(_repo: Repo) -> RemoteListing:
             nonlocal running, peak
             with lock:
                 running += 1
@@ -2394,100 +2378,30 @@ class TestParallelScan:
 
         assert 1 < peak <= MAX_REMOTE_LISTINGS
 
-    def test_error_stops_the_scan(self) -> None:
-        """A Ctrl-C cancels the queued work and tells the running work to stop."""
-        stop = threading.Event()
+    def test_error_abandons_the_work(self) -> None:
+        """A Ctrl-C drops the queued work and is raised without waiting."""
+        release = threading.Event()
         queued: list[Future[None]] = []
-
-        def until_cancelled() -> None:
-            deadline = time.monotonic() + 5
-            while not (queued and queued[0].cancelled()):
-                if time.monotonic() > deadline:
-                    return
-                time.sleep(0.001)
+        running: list[Future[bool]] = []
 
         def scan() -> None:
-            with _thread_pool(1, stop) as pool:
-                pool.submit(until_cancelled)
+            with _thread_pool(1) as pool:
+                running.append(pool.submit(release.wait, 5))
                 queued.append(pool.submit(time.sleep, 0))
                 raise KeyboardInterrupt
 
-        with pytest.raises(KeyboardInterrupt):
-            scan()
-        assert queued[0].cancelled()
-        assert stop.is_set()
-
-    def test_finished_scan_leaves_stop_clear(self) -> None:
-        """Without an error, the pool does not stop anything."""
-        stop = threading.Event()
-        with _thread_pool(2, stop) as pool:
-            assert pool.submit(int, "3").result() == 3
-        assert not stop.is_set()
-
-    def test_stopped_listing_skips_the_other_remotes(self, tmp_path: Path) -> None:
-        """Once the scan stops, the remotes not yet listed are not listed."""
-        with _init_repo_with_commit(tmp_path / "repo") as repo:
-            repo.create_remote("first", str(tmp_path / "first"))
-            repo.create_remote("second", str(tmp_path / "second"))
-            stop = threading.Event()
-            listed: list[str] = []
-
-            def list_and_stop(_repo: Repo, remote: str) -> dict[str, str]:
-                listed.append(remote)
-                stop.set()  # as on a Ctrl-C during this remote's `ls-remote`
-                return {}
-
-            with (
-                patch(
-                    "git_folder_status.git_folder_status._remote_refs", list_and_stop
-                ),
-                pytest.raises(ScanStoppedError),
-            ):
-                list_remotes(repo, stop)
-
-        assert listed == ["first"]
-
-    def test_stopped_scan_analyzes_nothing(self, tmp_path: Path) -> None:
-        """An analysis started after the scan stopped raises before any git."""
-        _init_repo_with_commit(tmp_path / "repo").close()
-        options = ScanOptions()
-        options.stop.set()
-        with pytest.raises(ScanStoppedError):
-            issues_for_one_folder(tmp_path / "repo", options)
-
-    def test_stop_during_listing_is_not_an_analysis_error(self, tmp_path: Path) -> None:
-        """A stop while listing remotes ends the analysis, not as a repo error."""
-        _init_repo_with_commit(tmp_path / "repo").close()
-
-        def stopped(_repo: Repo, _stop: object) -> RemoteListing:
-            raise ScanStoppedError
-
-        with (
-            patch("git_folder_status.git_folder_status.list_remotes", stopped),
-            pytest.raises(ScanStoppedError),
-        ):
-            issues_for_one_folder(tmp_path / "repo", ScanOptions(slow=True))
-
-    def test_git_version_asked_once(self, tmp_path: Path) -> None:
-        """Threads starting together do not each ask git for its version."""
-        for name in ("a", "b", "c", "d"):
-            _init_repo_with_commit(tmp_path / name).close()
-
-        def slow_version() -> tuple[int, ...]:
-            time.sleep(0.05)  # long enough for the first threads to overlap
-            return (2, 50, 0)
-
-        git_class = MagicMock()
-        type(git_class.return_value).version_info = PropertyMock(
-            side_effect=slow_version
-        )
-        _git_version.cache_clear()
         try:
-            with patch("git_folder_status.git_folder_status.Git", git_class):
-                issues_for_all_subfolders(tmp_path, recurse=1, jobs=8)
+            with pytest.raises(KeyboardInterrupt):
+                scan()
+            assert queued[0].cancelled()
+            assert not running[0].done()  # raised while it still ran
         finally:
-            _git_version.cache_clear()
-        assert git_class.call_count == 1
+            release.set()
+        assert running[0].result(timeout=5)
+
+    def test_jobs_must_be_positive(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="jobs must be at least 1"):
+            issues_for_all_subfolders(tmp_path, recurse=1, jobs=0)
 
     def test_analysis_error_raised(self, tmp_path: Path) -> None:
         """An unexpected error analyzing a nested folder still ends the scan."""

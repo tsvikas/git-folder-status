@@ -1,4 +1,9 @@
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -11,6 +16,17 @@ from git_folder_status.cli import (
     app,
     main,
 )
+
+
+@pytest.fixture(autouse=True)
+def _exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the CLI's immediate exits raise `SystemExit`, so pytest lives on."""
+
+    def interrupted() -> NoReturn:
+        raise SystemExit(128 + signal.SIGINT)
+
+    monkeypatch.setattr(cli, "_exit", sys.exit)
+    monkeypatch.setattr(cli, "_exit_interrupted", interrupted)
 
 
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:
@@ -99,3 +115,55 @@ def test_invalid_format() -> None:
         main(["--format", "invalid"])
     # Cyclopts >=5 exits 2 on its own parse errors.
     assert exc_info.value.code == 2
+
+
+class _InterruptedError(Exception):
+    """Raised in place of ending the test process on Ctrl-C."""
+
+
+def test_main_interrupted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A Ctrl-C during the scan reaches `main`, not cyclopts' `sys.exit(130)`."""
+
+    def interrupt(*_args: object, **_kwargs: object) -> NoReturn:
+        raise KeyboardInterrupt
+
+    def interrupted() -> NoReturn:
+        raise _InterruptedError
+
+    monkeypatch.setattr(cli, "issues_for_all_subfolders", interrupt)
+    monkeypatch.setattr(cli, "_exit_interrupted", interrupted)
+    with pytest.raises(_InterruptedError):
+        main([str(tmp_path)])
+
+
+# Run in a child process: the real exits end the process that calls them. The
+# child leaves a pool thread asleep, as a stopped scan leaves its analyses.
+_EXIT_SCRIPT = """
+import sys, time
+from concurrent.futures import ThreadPoolExecutor
+from git_folder_status import cli
+ThreadPoolExecutor(1).submit(time.sleep, 30)
+time.sleep(0.2)
+getattr(cli, sys.argv[1])(*map(int, sys.argv[2:]))
+"""
+
+
+def _run_exit(*args: str) -> tuple[int, float]:
+    start = time.monotonic()
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _EXIT_SCRIPT, *args], check=False, timeout=20
+    )
+    return done.returncode, time.monotonic() - start
+
+
+def test_exit_does_not_wait_for_threads() -> None:
+    code, seconds = _run_exit("_exit", str(EX_SOFTWARE))
+    assert code == EX_SOFTWARE
+    assert seconds < 10  # the pool thread sleeps 30s
+
+
+def test_interrupted_dies_by_sigint() -> None:
+    code, seconds = _run_exit("_exit_interrupted")
+    expected = 128 + signal.SIGINT if sys.platform == "win32" else -signal.SIGINT
+    assert code == expected
+    assert seconds < 10
