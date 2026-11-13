@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 from typing import NoReturn
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -167,3 +168,13 @@ def test_interrupted_dies_by_sigint() -> None:
     expected = 128 + signal.SIGINT if sys.platform == "win32" else -signal.SIGINT
     assert code == expected
     assert seconds < 10
+
+
+def test_flush_std_streams_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`>&-` leaves stdout None, and a closed pipe fails stderr's flush."""
+    stderr = MagicMock()
+    stderr.flush.side_effect = BrokenPipeError
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    cli._flush_std_streams()  # noqa: SLF001
+    stderr.flush.assert_called_once()

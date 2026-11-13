@@ -1600,6 +1600,11 @@ def issues_for_all_subfolders(  # noqa: PLR0913
 
     Up to `jobs` repos are analyzed at once, each on a thread of its own; the
     report does not depend on `jobs`. `jobs` must be at least 1.
+
+    On an error or Ctrl-C this raises without waiting for the analyses still
+    running: they go on in the background, running git (with `slow`, maybe a
+    minute of network calls), and Python's exit waits for them. They only
+    read, so a caller that exits at once, as the CLI does, loses nothing.
     """
     if jobs < 1:
         raise ValueError(f"jobs must be at least 1, not {jobs}")

@@ -3,6 +3,7 @@
 Run `git-folder-status -h` for help.
 """
 
+import contextlib
 import os
 import signal
 import sys
@@ -100,6 +101,18 @@ EX_SOFTWARE = 70
 EX_NOPERM = 77
 
 
+def _flush_std_streams() -> None:
+    """Flush stdout and stderr, which `os._exit` skips, without ever raising.
+
+    A stream can be None (`>&-`) or fail to flush (a closed pipe), and the exit
+    must still happen, with its code.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError):
+                stream.flush()
+
+
 # Both exits end the process that runs them, so their tests run them in a child
 # process, which coverage does not follow.
 def _exit(code: int) -> NoReturn:  # pragma: no cover
@@ -110,8 +123,7 @@ def _exit(code: int) -> NoReturn:  # pragma: no cover
     thread of the pool. The scan only reads, so nothing is lost by leaving
     them; their git processes end on their own.
     """
-    sys.stdout.flush()
-    sys.stderr.flush()
+    _flush_std_streams()
     os._exit(code)
 
 
@@ -121,8 +133,7 @@ def _exit_interrupted() -> NoReturn:  # pragma: no cover
     A shell running the CLI in a loop stops the loop only when the CLI died
     by the signal, not when it exited with code 130.
     """
-    sys.stdout.flush()
-    sys.stderr.flush()
+    _flush_std_streams()
     if sys.platform != "win32":
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         # sent to this thread, so it is delivered before the call returns
