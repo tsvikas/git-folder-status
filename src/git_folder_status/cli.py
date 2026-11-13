@@ -62,8 +62,7 @@ def git_folder_status(  # noqa: PLR0913
             (their upstream is only `ahead`)
         scan_external_worktrees: also analyze worktrees located outside the
             scanned directory
-        jobs: repos to analyze at once; with --slow, 1 shows ssh prompts one
-            at a time
+        jobs: repos to analyze at once
 
     Returns:
         The process exit code.

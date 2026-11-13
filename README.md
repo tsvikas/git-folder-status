@@ -72,9 +72,11 @@ always reported. `--all` only adds context that is not an issue, and `--slow`
 adds checks that need the network, such as remote tags and unreachable remotes.
 
 Repos are analyzed several at a time; `--jobs` sets how many (`--help` shows
-the default). With `--slow`, use
-`--jobs 1` if ssh asks for a passphrase or to confirm a host key, so that one
-prompt shows at a time.
+the default).
+
+`--slow` never stops to ask for input: a remote that wants a login, a key
+passphrase that is not in ssh-agent, or confirming an unknown host key, is
+reported as unreachable with git's or ssh's message.
 
 ### Branches
 
