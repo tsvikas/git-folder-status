@@ -963,15 +963,24 @@ def repo_issues_in_branches(
     return {"branches": branches} if branches else {}
 
 
+# A remote that asks for input would stall the scan; without a prompt it fails
+# and is reported instead. GIT_TERMINAL_PROMPT=0 stops git's own (https login)
+# prompts. ssh reads the terminal itself, for a key's passphrase or to accept
+# an unknown host key; SSH_ASKPASS_REQUIRE=force (OpenSSH 8.4+) sends those to
+# SSH_ASKPASS instead, here a program that always fails. Keys in ssh-agent and
+# known host keys still work.
+_NO_PROMPTS_ENV = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "SSH_ASKPASS": "false",
+    "SSH_ASKPASS_REQUIRE": "force",
+}
+
+
 def _remote_refs(repo: Repo, remote_name: str) -> dict[str, str]:
     """Map each branch and tag ref of a remote to its sha, per `git ls-remote`."""
     # ls_remote's typed overload widens the result to str | bytes | tuple | ...;
     # the plain (no with_extended_output) call always yields str.
-    # GIT_TERMINAL_PROMPT=0: a dead https remote often asks for a login, which
-    # would stall the scan; without a prompt it fails and is reported instead.
-    out = repo.git.ls_remote(
-        "--heads", "--tags", remote_name, env={"GIT_TERMINAL_PROMPT": "0"}
-    )
+    out = repo.git.ls_remote("--heads", "--tags", remote_name, env=_NO_PROMPTS_ENV)
     if not isinstance(out, str):
         raise TypeError(f"unexpected ls-remote output type: {type(out).__name__}")
     refs: dict[str, str] = {}

@@ -1,7 +1,9 @@
 """Tests for git_folder_status module."""
 
 import dataclasses
+import json
 import shutil
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -1319,6 +1321,32 @@ class TestRemoteListing:
             issues_for_one_folder(tmp_path / "clone", options)
             issues_for_one_folder(tmp_path / "clone-wt", options)
         assert spy.call_count == 1
+
+    def test_listing_never_prompts_through_ssh(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ssh that `ls-remote` starts is told to fail rather than prompt."""
+        seen = tmp_path / "ssh-env.json"
+        fake_ssh = tmp_path / "fake_ssh.py"
+        fake_ssh.write_text(
+            "import json, os, sys\n"
+            "keys = ('SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'GIT_TERMINAL_PROMPT')\n"
+            f"with open({str(seen)!r}, 'w') as f:\n"
+            "    json.dump({k: os.environ.get(k) for k in keys}, f)\n"
+            "sys.exit(255)\n"
+        )
+        python = Path(sys.executable).as_posix()
+        monkeypatch.setenv("GIT_SSH_COMMAND", f'"{python}" "{fake_ssh.as_posix()}"')
+        with _init_repo_with_commit(tmp_path / "repo") as repo:
+            repo.create_remote("origin", "ssh://git@example.invalid/repo.git")
+            remotes = list_remotes(repo)
+
+        assert "origin" in remotes.errors
+        assert json.loads(seen.read_text()) == {
+            "SSH_ASKPASS": "false",
+            "SSH_ASKPASS_REQUIRE": "force",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
 
     def test_live_remote_listing(self, tmp_path: Path) -> None:
         """A reachable remote lists its branches and tags, with no errors."""
