@@ -2407,13 +2407,20 @@ class TestParallelScan:
 
     def test_error_abandons_the_work(self) -> None:
         """A Ctrl-C drops the queued work and is raised without waiting."""
+        started = threading.Event()
         release = threading.Event()
         queued: list[Future[None]] = []
         running: list[Future[bool]] = []
 
+        def hold() -> bool:
+            started.set()
+            return release.wait(5)
+
         def scan() -> None:
             with _thread_pool(1) as pool:
-                running.append(pool.submit(release.wait, 5))
+                running.append(pool.submit(hold))
+                # else a slow thread start (PyPy) leaves it queued, and cancelled
+                assert started.wait(5)
                 queued.append(pool.submit(time.sleep, 0))
                 raise KeyboardInterrupt
 
