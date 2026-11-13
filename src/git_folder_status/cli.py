@@ -3,6 +3,9 @@
 Run `git-folder-status -h` for help.
 """
 
+import contextlib
+import os
+import signal
 import sys
 import traceback
 from collections.abc import Sequence
@@ -13,12 +16,15 @@ import cyclopts.types
 from cyclopts import App, Parameter
 
 from . import (
+    DEFAULT_JOBS,
     REPORT_FORMATS_TYPE,
     format_report,
     issues_for_all_subfolders,
 )
 
-app = App(name="git-folder-status")
+# Cyclopts would turn a Ctrl-C into `sys.exit(130)`, which waits for the scan's
+# threads; `main` ends the process at once instead (see `_exit_interrupted`).
+app = App(name="git-folder-status", suppress_keyboard_interrupt=False)
 app.register_install_completion_command()
 
 
@@ -41,6 +47,7 @@ def git_folder_status(  # noqa: PLR0913
     scan_external_worktrees: Annotated[
         bool, Parameter(name=["-w", "--external-worktrees"])
     ] = False,
+    jobs: Annotated[cyclopts.types.PositiveInt, Parameter(alias="-j")] = DEFAULT_JOBS,
 ) -> int:
     """Find all unsaved data in a directory.
 
@@ -56,6 +63,7 @@ def git_folder_status(  # noqa: PLR0913
             (their upstream is only `ahead`)
         scan_external_worktrees: also analyze worktrees located outside the
             scanned directory
+        jobs: repos to analyze at once
 
     Returns:
         The process exit code.
@@ -74,6 +82,7 @@ def git_folder_status(  # noqa: PLR0913
         include_all=include_all,
         include_unpulled=include_unpulled,
         scan_external_worktrees=scan_external_worktrees,
+        jobs=jobs,
     )
     print(format_report(issues, include_ok=empty, fmt=fmt))
     return 0
@@ -92,10 +101,50 @@ EX_SOFTWARE = 70
 EX_NOPERM = 77
 
 
+def _flush_std_streams() -> None:
+    """Flush stdout and stderr, which `os._exit` skips, without ever raising.
+
+    A stream can be None (`>&-`) or fail to flush (a closed pipe), and the exit
+    must still happen, with its code.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError):
+                stream.flush()
+
+
+# Both exits end the process that runs them, so their tests run them in a child
+# process, which coverage does not follow.
+def _exit(code: int) -> NoReturn:  # pragma: no cover
+    """Exit with `code` at once, without waiting for the scan's threads.
+
+    After an error or Ctrl-C, analyses may still be running git (an `ls-remote`
+    to a dead host can take a minute), and a normal exit waits for every
+    thread of the pool. The scan only reads, so nothing is lost by leaving
+    them; their git processes end on their own.
+    """
+    _flush_std_streams()
+    os._exit(code)
+
+
+def _exit_interrupted() -> NoReturn:  # pragma: no cover
+    """End the process on Ctrl-C at once, as killed by SIGINT, like Python does.
+
+    A shell running the CLI in a loop stops the loop only when the CLI died
+    by the signal, not when it exited with code 130.
+    """
+    _flush_std_streams()
+    if sys.platform != "win32":
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        # sent to this thread, so it is delivered before the call returns
+        signal.raise_signal(signal.SIGINT)
+    _exit(128 + signal.SIGINT)
+
+
 def _fail(exc: Exception, code: int) -> NoReturn:
     """Report `exc` on stderr and exit with `code`."""
     print(f"error: {exc}", file=sys.stderr)
-    sys.exit(code)
+    _exit(code)
 
 
 def main(tokens: Sequence[str] | None = None) -> None:
@@ -122,4 +171,6 @@ def main(tokens: Sequence[str] | None = None) -> None:
         _fail(exc, EX_UNAVAILABLE)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
-        sys.exit(EX_SOFTWARE)
+        _exit(EX_SOFTWARE)
+    except KeyboardInterrupt:
+        _exit_interrupted()
